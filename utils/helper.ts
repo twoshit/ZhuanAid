@@ -1,4 +1,5 @@
 import type { HighLightArea } from '~/types/board';
+import type { BoardRegion } from '~/types/misc';
 
 // 余弦相似度
 export function cosineSimilarity(a: number[], b: number[]) {
@@ -20,13 +21,20 @@ export function loadImage(src: string): Promise<HTMLImageElement> {
 }
 
 // 裁剪图片
-export function cropImage(file: File, x1: number, y1: number, x2: number, y2: number): Promise<File> {
+// region 为归一化比例(0~1), 按图片实际分辨率自适应换算为像素坐标
+export function cropImage(file: File, region: BoardRegion): Promise<File> {
   return new Promise((resolve, reject) => {
     // 创建Image对象并加载File
     const img = new Image();
     img.onload = () => {
+      // 按实际尺寸换算裁剪像素坐标
+      const x1 = Math.max(0, Math.round(region.x1 * img.width));
+      const y1 = Math.max(0, Math.round(region.y1 * img.height));
+      const x2 = Math.min(img.width, Math.round(region.x2 * img.width));
+      const y2 = Math.min(img.height, Math.round(region.y2 * img.height));
+
       // 检查裁剪区域是否有效
-      if (x1 < 0 || y1 < 0 || x2 > img.width || y2 > img.height || x1 >= x2 || y1 >= y2) {
+      if (x1 >= x2 || y1 >= y2) {
         reject(new Error('裁剪区域无效'));
         return;
       }

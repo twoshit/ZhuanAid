@@ -35,16 +35,17 @@
 
             <div class="flex gap-10">
               <label>
-                <span>选择截图机型:</span>
+                <span>裁剪区域预设:</span>
                 <USelect
                   class="w-64"
                   v-model="settingStore.model"
-                  :options="SUPPORTED_MODELS"
+                  :options="BOARD_REGIONS"
                   option-attribute="name"
                   value-attribute="id"
                 />
               </label>
             </div>
+            <p class="text-xs text-gray-400">加载时会自动检测棋盘位置，自适应任意分辨率与机型；检测失败时回退到所选预设比例。</p>
 
             <div class="flex gap-10">
               <label>
@@ -95,7 +96,7 @@
 </template>
 
 <script setup lang="ts">
-import { SUPPORTED_MODELS } from '~/config';
+import { BOARD_REGIONS } from '~/config';
 import { useGridStore } from '~/stores/grid';
 import { useSettingStore } from '~/stores/setting';
 

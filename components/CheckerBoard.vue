@@ -3,7 +3,7 @@
     <!-- 顶部列序号 -->
     <BoardColNo :cols="gridStore.cols" position="top" />
 
-    <div v-for="(row, rowIndex) in gridStore.grid" :key="rowIndex" class="flex">
+    <div v-for="(row, rowIndex) in displayGrid" :key="rowIndex" class="flex">
       <!-- 左侧行序号 -->
       <BoardRowNo :index="rowIndex" position="left" />
 
@@ -46,10 +46,15 @@
 import BoardColNo from '~/components/widgets/BoardColNo.vue';
 import BoardRowNo from '~/components/widgets/BoardRowNo.vue';
 import { useGridStore } from '~/stores/grid';
+import { useReplayStore } from '~/stores/replay';
 import { useSettingStore } from '~/stores/setting';
 
 const gridStore = useGridStore();
+const replayStore = useReplayStore();
 const settingStore = useSettingStore();
+
+// 回放模式下展示棋盘快照, 否则展示实时棋盘
+const displayGrid = computed(() => replayStore.currentGrid ?? gridStore.grid);
 
 function cellImageCls(cell: number) {
   return cell === 0 ? '' : 'border border-black';

@@ -3,6 +3,7 @@
     <div class="flex flex-col gap-5 p-10 pr-20">
       <EliminateCard />
       <MoveCard />
+      <Replay />
     </div>
   </div>
 </template>
@@ -10,4 +11,5 @@
 <script setup lang="ts">
 import EliminateCard from '~/components/EliminateCard.vue';
 import MoveCard from '~/components/MoveCard.vue';
+import Replay from '~/components/Replay.vue';
 </script>

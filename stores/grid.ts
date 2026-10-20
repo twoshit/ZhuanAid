@@ -1,10 +1,12 @@
 import { defineStore } from 'pinia';
 import toastFactory from '~/composables/toast';
-import { SUPPORTED_MODELS } from '~/config';
+import { BOARD_REGIONS } from '~/config';
+import { useReplayStore } from '~/stores/replay';
 import { useSettingStore } from '~/stores/setting';
 import type { EffectiveMove, EliminateBlock } from '~/types/board';
 import { Board } from '~/utils/Board';
 import { BoardParser } from '~/utils/BoardParser';
+import { detectBoardRegion } from '~/utils/boardDetect';
 import { cropImage, gridIsValid, highlight } from '~/utils/helper';
 
 // 生成 14x10 的空棋盘
@@ -102,14 +104,16 @@ export const useGridStore = defineStore('grid', {
       const toast = toastFactory();
       const settingStore = useSettingStore();
 
-      const targetModel = SUPPORTED_MODELS.find(model => model.id === settingStore.model);
-      if (!targetModel) {
-        console.warn(`未找到指定的手机型号: ${settingStore.model}`);
-        toast.warning('棋盘加载失败', `未找到指定的手机型号: ${settingStore.model}`);
-        return;
+      // 优先自动检测棋盘位置(自适应任意分辨率/机型/棋盘位置), 失败则回退到所选归一化预设
+      let targetRegion = await detectBoardRegion(file, settingStore.rows, settingStore.cols);
+      if (!targetRegion) {
+        console.warn('自动检测棋盘失败, 回退到裁剪预设:', settingStore.model);
+        targetRegion = BOARD_REGIONS.find(region => region.id === settingStore.model) ?? BOARD_REGIONS[0];
       }
 
       this.phase = '';
+      // 加载新棋盘时清空回放记录
+      useReplayStore().reset();
       const parser = new BoardParser(status => {
         this.phase = status;
       });
@@ -121,7 +125,7 @@ export const useGridStore = defineStore('grid', {
         );
 
         // 裁剪图片
-        const boardAreaFile = await cropImage(file, targetModel.x1, targetModel.y1, targetModel.x2, targetModel.y2);
+        const boardAreaFile = await cropImage(file, targetRegion);
         const grid = await parser.parse(boardAreaFile, settingStore.rows, settingStore.cols);
         console.log('提取的棋盘数据为:', grid);
         if (gridIsValid(grid)) {
@@ -144,9 +148,24 @@ export const useGridStore = defineStore('grid', {
       return new Promise(async resolve => {
         await highlight({ point1: move.tileVector.start, point2: move.tileVector.end }, settingStore.autoPlayDuration);
 
+        const prevGrid = this.grid.map(row => [...row]);
         const board = new Board(this.grid);
         const [grid, movedTileVector] = board.execMove(move);
         this.grid = grid;
+
+        // 记录回放步骤 (回放模式进行中不记录, 避免污染回放数据)
+        const replayStore = useReplayStore();
+        if (!replayStore.active) {
+          replayStore.record(
+            {
+              type: 'move',
+              grid: grid.map(row => [...row]),
+              area: { point1: move.tileVector.start, point2: move.tileVector.end },
+              value: move.eliminate.value,
+            },
+            prevGrid
+          );
+        }
 
         setTimeout(async () => {
           await highlight(
@@ -165,10 +184,25 @@ export const useGridStore = defineStore('grid', {
 
       await highlight(eliminate, settingStore.autoPlayDuration);
 
+      const prevGrid = this.grid.map(row => [...row]);
       const board = new Board(this.grid);
       const grid = board.execEliminate(eliminate);
       if (grid) {
         this.grid = grid;
+
+        // 记录回放步骤 (回放模式进行中不记录, 避免污染回放数据)
+        const replayStore = useReplayStore();
+        if (!replayStore.active) {
+          replayStore.record(
+            {
+              type: 'eliminate',
+              grid: grid.map(row => [...row]),
+              area: { point1: eliminate.point1, point2: eliminate.point2 },
+              value: eliminate.value,
+            },
+            prevGrid
+          );
+        }
       }
     },
 
@@ -248,6 +282,8 @@ export const useGridStore = defineStore('grid', {
 
       // 恢复棋盘状态
       this.grid = this.backupGrid.map(row => [...row]);
+      // 棋盘已重置, 之前记录的步骤作废, 重新记录本次尝试的路径
+      useReplayStore().reset();
 
       let index = 0;
       while (true) {
