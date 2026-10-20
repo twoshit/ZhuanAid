@@ -4,6 +4,7 @@ import { BOARD_REGIONS } from '~/config';
 import { useReplayStore } from '~/stores/replay';
 import { useSettingStore } from '~/stores/setting';
 import type { EffectiveMove, EliminateBlock } from '~/types/board';
+import type { BoardRegion } from '~/types/misc';
 import { Board } from '~/utils/Board';
 import { BoardParser } from '~/utils/BoardParser';
 import { detectBoardRegion } from '~/utils/boardDetect';
@@ -22,6 +23,10 @@ interface GridState {
   autoRunning: boolean;
   isStop: boolean;
   step: number;
+  // 最近一次加载时棋盘在图像中的归一化区域 (供自动操作坐标映射)
+  boardRegion: BoardRegion | null;
+  // 屏幕抓取模式下的截图像素尺寸; 手动上传时为 null
+  captureImageSize: { width: number; height: number } | null;
 }
 
 interface Trip {
@@ -70,6 +75,8 @@ export const useGridStore = defineStore('grid', {
     autoRunning: false,
     isStop: false,
     step: 1,
+    boardRegion: null,
+    captureImageSize: null,
   }),
   getters: {
     // 棋盘行数
@@ -99,17 +106,26 @@ export const useGridStore = defineStore('grid', {
     },
   },
   actions: {
-    // 加载棋盘
-    async load(file: File) {
+    // 加载棋盘; screenInfo 提供时表示来自屏幕抓取(截图像素尺寸), 用于自动操作的坐标映射
+    async load(file: File, screenInfo?: { width: number; height: number }) {
       const toast = toastFactory();
       const settingStore = useSettingStore();
 
       // 优先自动检测棋盘位置(自适应任意分辨率/机型/棋盘位置), 失败则回退到所选归一化预设
-      let targetRegion = await detectBoardRegion(file, settingStore.rows, settingStore.cols);
+      // 屏幕抓取为全屏图像, 游戏窗口占比小, 放宽最小面积比例
+      let targetRegion = await detectBoardRegion(
+        file,
+        settingStore.rows,
+        settingStore.cols,
+        screenInfo ? { screenMode: true, minAreaRatio: 0.005 } : undefined
+      );
       if (!targetRegion) {
         console.warn('自动检测棋盘失败, 回退到裁剪预设:', settingStore.model);
         targetRegion = BOARD_REGIONS.find(region => region.id === settingStore.model) ?? BOARD_REGIONS[0];
       }
+
+      this.boardRegion = targetRegion;
+      this.captureImageSize = screenInfo ?? null;
 
       this.phase = '';
       // 加载新棋盘时清空回放记录
@@ -138,6 +154,27 @@ export const useGridStore = defineStore('grid', {
         toast.error('棋盘加载失败', error.message);
       } finally {
         this.loading = false;
+      }
+    },
+
+    // 抓取本机屏幕并识别棋盘 (复用上传识别管线)
+    async captureScreen() {
+      const toast = toastFactory();
+      this.loading = true;
+      this.phase = '正在抓取屏幕…';
+      try {
+        const res = await $fetch<{ base64: string; width: number; height: number }>('/api/screen/capture', {
+          method: 'POST',
+        });
+        const bin = atob(res.base64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const file = new File([bytes], 'screen-capture.png', { type: 'image/png' });
+        await this.load(file, { width: res.width, height: res.height });
+      } catch (error: any) {
+        this.loading = false;
+        this.phase = '';
+        toast.error('屏幕抓取失败', error?.statusMessage ?? error?.message ?? String(error));
       }
     },
 

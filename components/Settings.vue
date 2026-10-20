@@ -72,6 +72,15 @@
                 {{ gridStore.phase || '重置棋盘' }}
               </UButton>
             </div>
+
+            <div class="border-t pt-3">
+              <div class="flex gap-4 items-center">
+                <UButton @click="handleCapture" :loading="capturing" color="emerald" variant="outline">
+                  抓取屏幕并识别
+                </UButton>
+                <span class="text-xs text-gray-400">直接抓取 Mac 主显示器, 自动定位游戏棋盘 (需要"屏幕录制"权限)</span>
+              </div>
+            </div>
           </div>
 
           <div class="space-y-3 my-3 border rounded-md p-3">
@@ -96,6 +105,7 @@
 </template>
 
 <script setup lang="ts">
+import toastFactory from '~/composables/toast';
 import { BOARD_REGIONS } from '~/config';
 import { useGridStore } from '~/stores/grid';
 import { useSettingStore } from '~/stores/setting';
@@ -129,5 +139,38 @@ function handleFileChange(files: FileList) {
 async function processBoard() {
   open.value = false;
   await gridStore.load(file.value!);
+}
+
+const capturing = ref(false);
+
+interface PreflightResult {
+  screencapture: boolean;
+  screenRecording: boolean;
+  dragBinary: boolean;
+  messages: string[];
+}
+
+async function handleCapture() {
+  capturing.value = true;
+  const toast = toastFactory();
+  try {
+    const pf = await $fetch<PreflightResult>('/api/preflight');
+    if (!pf.screencapture || !pf.screenRecording) {
+      toast.error(
+        '未检测到屏幕录制权限',
+        '请打开 系统设置 → 隐私与安全性 → 屏幕录制, 勾选运行 yarn dev 的终端/IDE 进程, 重启开发服务器后重试。'
+      );
+      return;
+    }
+    if (!pf.dragBinary) {
+      toast.error('鼠标助手不可用', '自动操作功能无法使用 (clang 编译失败), 屏幕识别仍可正常使用。');
+    }
+    open.value = false;
+    await gridStore.captureScreen();
+  } catch (error: any) {
+    toast.error('环境自检失败', error?.statusMessage ?? error?.message ?? String(error));
+  } finally {
+    capturing.value = false;
+  }
 }
 </script>

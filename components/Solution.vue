@@ -4,11 +4,13 @@
       <EliminateCard />
       <MoveCard />
       <Replay />
+      <AutoControl />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import AutoControl from '~/components/AutoControl.vue';
 import EliminateCard from '~/components/EliminateCard.vue';
 import MoveCard from '~/components/MoveCard.vue';
 import Replay from '~/components/Replay.vue';
