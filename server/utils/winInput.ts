@@ -103,25 +103,29 @@ export async function captureWindow(
 }
 
 // 注入前把目标窗口提到最前(HID 事件要求窗口为当前活动窗口, 真机验证)
+// 注意: System Events 的进程名可能是英文名(WeChat)而非 CGWindowList 的本地化名(微信),
+// 按名字匹配会静默失败导致事件打到别的窗口 -> 必须按 unix id (pid) 匹配
 export async function raiseWindow(windowId: number): Promise<void> {
   const wins = await listWindows();
   const win = wins.find(w => w.windowId === windowId);
   if (!win) throw new Error(`窗口 ${windowId} 不存在或已关闭`);
-  const ownerEsc = win.owner.replace(/"/g, '\\"');
-  // 无标题窗口退化为按位置匹配; 有标题按名称 AXRaise
-  const script = win.title
-    ? `tell application "System Events"
-  set frontmost of process "${ownerEsc}" to true
-  tell process "${ownerEsc}"
-    repeat with w in windows
-      if name of w is "${win.title.replace(/"/g, '\\"')}" then
-        perform action "AXRaise" of w
-        exit repeat
-      end if
+  const titleEsc = win.title.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const script = `tell application "System Events"
+  set procs to first process whose unix id is ${win.pid}
+  set frontmost of procs to true
+  try
+    repeat with w in windows of procs
+      try
+        if name of w is "${titleEsc}" then
+          perform action "AXRaise" of w
+          exit repeat
+        end if
+      end try
     end repeat
-  end tell`
-    : `tell application "System Events" to set frontmost of process "${ownerEsc}" to true`;
-  await run('osascript', ['-e', script], { timeout: 8000 }).catch(() => {});
+  end try
+end tell`;
+  // 不吞错误: 前置失败时让调用方报错, 避免 HID 事件打到别的窗口"看似成功实则无反应"
+  await run('osascript', ['-e', script], { timeout: 8000 });
   await new Promise(r => setTimeout(r, 250));
 }
 
