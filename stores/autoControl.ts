@@ -138,7 +138,8 @@ export const useAutoControlStore = defineStore('autoControl', {
             method: 'POST',
             body: { windowId: gridStore.windowTarget!, x: a.x, y: a.y, imageWidth: size.width, imageHeight: size.height },
           });
-          await sleep(150);
+          // 游戏需要时间渲染选中态, 过快第二击会被忽略
+          await sleep(450);
           await $fetch('/api/win/click', {
             method: 'POST',
             body: { windowId: gridStore.windowTarget!, x: b.x, y: b.y, imageWidth: size.width, imageHeight: size.height },
@@ -175,7 +176,15 @@ export const useAutoControlStore = defineStore('autoControl', {
       const file = new File([bytes], 'verify.png', { type: 'image/png' });
       const cropped = await cropImage(file, gridStore.boardRegion!);
       const parsed = await new BoardParser().parse(cropped, gridStore.rows, gridStore.cols);
-      return gridsEqual(parsed, expectedGrid);
+      const ok = gridsEqual(parsed, expectedGrid);
+      if (!ok) {
+        const diffs: string[] = [];
+        for (let r = 0; r < parsed.length; r++)
+          for (let c = 0; c < parsed[0].length; c++)
+            if (parsed[r][c] !== expectedGrid[r][c]) diffs.push(`R${r + 1}C${c + 1} 实际${parsed[r][c]} 期望${expectedGrid[r][c]}`);
+        console.warn('[SYNC-DIFF]', diffs.length, diffs.slice(0, 12).join(' | '));
+      }
+      return ok;
     },
     // 执行队列中的下一个任务; 窗口同步模式下执行后校验一致性
     async runNext(): Promise<boolean> {
