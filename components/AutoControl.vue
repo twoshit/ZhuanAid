@@ -198,8 +198,8 @@ function onWindowSelect(label: string) {
   if (win) autoStore.inputMode = 'window';
 }
 
-// 窗口模式下始终展示卡片
-const showCard = computed(() => !!gridStore.windowTarget || !!gridStore.captureImageSize);
+// 始终展示: 窗口选择入口在卡片内, 不能等选中后才显示
+const showCard = computed(() => true);
 
 // 棋盘/求解结果变化(步骤被重置)时, 重置任务队列
 watch(

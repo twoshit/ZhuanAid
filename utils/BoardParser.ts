@@ -99,48 +99,53 @@ export class BoardParser {
         const cropX = Math.max(0, x + (cellWidth - cellSize) / 2);
         const cropY = Math.max(0, y + (cellHeight - cellSize) / 2);
 
-        const cellCanvas = document.createElement('canvas');
-        cellCanvas.width = cellSize;
-        cellCanvas.height = cellSize;
-        const cellCtx = cellCanvas.getContext('2d')!;
-        cellCtx.drawImage(canvas, cropX, cropY, cellSize, cellSize, 0, 0, cellSize, cellSize);
+        // 对格子区域提取特征并分类; inset 为中心内缩比例
+        const classify = async (inset: number): Promise<number> => {
+          const shrink = cellSize * inset;
+          const sx = cropX + shrink / 2;
+          const sy = cropY + shrink / 2;
+          const sw = cellSize - shrink;
+          const cellCanvas = document.createElement('canvas');
+          cellCanvas.width = cellSize;
+          cellCanvas.height = cellSize;
+          const cellCtx = cellCanvas.getContext('2d')!;
+          cellCtx.drawImage(canvas, sx, sy, sw, sw, 0, 0, cellSize, cellSize);
 
-        // 提取特征
-        const cellImg = cellCanvas.toDataURL();
-        const cellImage = await loadImage(cellImg);
-        const tensor = tf.browser
-          .fromPixels(cellImage)
-          .resizeNearestNeighbor(INPUT_SHAPE)
-          .toFloat()
-          .div(255.0)
-          .expandDims();
-        const output = sharedModel.execute({ [INPUT_NAME]: tensor });
-        const cellFeatures: number[] = Array.from(await output.data());
+          const tensor = tf.browser
+            .fromPixels(cellCanvas)
+            .resizeNearestNeighbor(INPUT_SHAPE)
+            .toFloat()
+            .div(255.0)
+            .expandDims();
+          const output = sharedModel.execute({ [INPUT_NAME]: tensor });
+          const cellFeatures: number[] = Array.from(await output.data());
+          tensor.dispose();
+          output.dispose();
 
-        // 分类：找最相似原型
-        let bestClass = -1;
-        const simArray: { sim: number; cls: number }[] = [];
-        for (let idx = 0; idx < NUM_CLASSES; idx++) {
-          if (prototypes[idx] === null) continue;
-          const sim = cosineSimilarity(cellFeatures, prototypes[idx]);
-          simArray.push({ sim, cls: idx });
+          let bestClass = -1;
+          let bestSim = -1;
+          for (let idx = 0; idx < NUM_CLASSES; idx++) {
+            if (prototypes[idx] === null) continue;
+            const sim = cosineSimilarity(cellFeatures, prototypes[idx]);
+            if (sim > bestSim) {
+              bestSim = sim;
+              bestClass = idx;
+            }
+          }
+          return bestSim > SIM ? bestClass : -1;
+        };
+
+        let bestClass = await classify(0);
+        // 区域对齐偏差会让邻砖边缘混入格子导致匹配失败: 逐级内缩重试
+        for (const inset of [0.06, 0.12, 0.2]) {
+          if (bestClass !== -1) break;
+          bestClass = await classify(inset);
         }
-
-        // 按照相似度排序
-        simArray.sort((a, b) => b.sim - a.sim);
-        if (simArray[0].sim > SIM) {
-          bestClass = simArray[0].cls;
-        } else {
-          console.warn(
-            `(${row + 1}, ${col + 1})匹配时最高相似度低于${SIM}，为${simArray[0].sim.toString().slice(0, 4)}`,
-            simArray
-          );
+        if (bestClass === -1) {
+          console.warn(`(${row + 1}, ${col + 1}) 所有内缩级别均匹配失败`);
         }
 
         grid[row][col] = bestClass;
-
-        tensor.dispose();
-        output.dispose();
       }
     }
 
