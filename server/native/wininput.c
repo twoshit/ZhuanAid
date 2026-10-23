@@ -55,12 +55,16 @@ static void printWindows(pid_t onlyId, int boundsOnly) {
   CFRelease(list);
 }
 
+// 真机验证: 微信小程序对 CGEventPostToPid 投递的事件时灵时不灵(重启会话后稳定拒收),
+// 而 HID 级 CGEventPost 始终被接受 -> 统一走 HID 事件流(配合调用前 AXRaise 前置窗口)。
+// pid 参数保留仅为兼容旧调用方, 实际忽略。
+static CGEventSourceRef g_src = NULL;
 static void postTo(pid_t pid, CGEventType type, CGPoint p) {
-  CGEventSourceRef src = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
-  CGEventRef ev = CGEventCreateMouseEvent(src, type, p, kCGMouseButtonLeft);
-  CGEventPostToPid(pid, ev);
+  (void)pid;
+  if (!g_src) g_src = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+  CGEventRef ev = CGEventCreateMouseEvent(g_src, type, p, kCGMouseButtonLeft);
+  CGEventPost(kCGHIDEventTap, ev);
   if (ev) CFRelease(ev);
-  if (src) CFRelease(src);
 }
 
 int main(int argc, const char *argv[]) {
@@ -87,18 +91,30 @@ int main(int argc, const char *argv[]) {
     pid_t pid = atoi(argv[2]);
     CGPoint s = CGPointMake(atof(argv[3]), atof(argv[4]));
     CGPoint e = CGPointMake(atof(argv[5]), atof(argv[6]));
-    int steps = argc > 7 ? atoi(argv[7]) : 20;
-    int delayMs = argc > 8 ? atoi(argv[8]) : 16;
+    int steps = argc > 7 ? atoi(argv[7]) : 24;
+    int delayMs = argc > 8 ? atoi(argv[8]) : 40;
     if (steps < 1) steps = 1;
 
+    // 悬停: 让游戏先"看到"光标落在目标砖上
+    postTo(pid, kCGEventMouseMoved, s);
+    usleep(120000);
     postTo(pid, kCGEventLeftMouseDown, s);
-    usleep(80000);
+    usleep(220000);
+    // 微抖动: 超过小程序 canvas 的拖拽启动阈值, 否则整段被当作点击忽略
+    postTo(pid, kCGEventLeftMouseDragged, CGPointMake(s.x + 3, s.y + 3));
+    usleep(60000);
+    postTo(pid, kCGEventLeftMouseDragged, s);
+    usleep(60000);
     for (int i = 1; i <= steps; i++) {
       double t = (double)i / steps;
-      CGPoint p = CGPointMake(s.x + (e.x - s.x) * t, s.y + (e.y - s.y) * t);
+      // 缓入缓出, 更接近真实手势
+      double ease = t < 0.5 ? 2 * t * t : 1 - (1 - t) * (1 - t) / 2;
+      CGPoint p = CGPointMake(s.x + (e.x - s.x) * ease, s.y + (e.y - s.y) * ease);
       postTo(pid, kCGEventLeftMouseDragged, p);
       usleep(delayMs * 1000);
     }
+    // 终点悬停后松开
+    usleep(220000);
     postTo(pid, kCGEventLeftMouseUp, e);
     printf("ok drag %d %.1f,%.1f -> %.1f,%.1f\n", pid, s.x, s.y, e.x, e.y);
     return 0;

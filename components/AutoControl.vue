@@ -4,7 +4,7 @@
       <div class="flex justify-between items-center gap-3">
         <h2 class="text-2xl flex items-end shrink-0">
           <span>自动操作</span>
-          <code class="ml-1 text-sm text-purple-500">({{ autoStore.windowMode ? '窗口后台同步' : '鼠标拖拽' }})</code>
+          <code class="ml-1 text-sm text-purple-500">({{ autoStore.windowMode ? '窗口同步模式' : '鼠标拖拽' }})</code>
         </h2>
         <div class="flex gap-2 items-center flex-wrap justify-end">
           <USelect v-model="intervalLabel" :options="intervalOptions" size="xs" class="w-28" :disabled="autoStore.running" />
@@ -68,8 +68,8 @@
         <URadioGroup
           v-model="autoStore.inputMode"
           :options="[
-            { value: 'window', label: '窗口后台注入 (不占用鼠标)' },
-            { value: 'hid', label: '真实鼠标 (占用光标, 窗口需前台)' },
+            { value: 'window', label: '窗口同步 (自动前置+画面校验)' },
+            { value: 'hid', label: '真实鼠标 (整屏抓取, 窗口需前台)' },
           ]"
           :ui="{ fieldset: 'flex gap-6 flex-1' }"
           size="sm"
@@ -88,9 +88,9 @@
       </div>
 
       <p class="text-sm text-amber-600">
-        窗口后台模式: 点击/拖拽直接投递给小程序进程, 您的鼠标可继续做其他事; 小程序窗口保持可见(可被部分遮挡)即可。
-        真实鼠标模式需游戏窗口位于前台且棋盘不被遮挡。首次操作可能需在
-        系统设置 → 隐私与安全性 → 辅助功能/屏幕录制 中授权终端或浏览器。
+        窗口同步模式: 每步自动把小程序窗口提到最前再注入操作(鼠标每步短暂跳动约 1 秒, 步与步之间可自由使用),
+        执行后重新抓取窗口校验画面一致, 不符自动暂停; 网页棋盘与小程序始终保持同步。
+        真实鼠标模式使用整屏抓取。首次需在 系统设置 → 隐私与安全性 → 辅助功能/屏幕录制 中授权。
       </p>
 
       <div v-if="autoStore.nextTask" class="p-3 border rounded-md flex items-center gap-3">

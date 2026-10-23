@@ -102,6 +102,29 @@ export async function captureWindow(
   }
 }
 
+// 注入前把目标窗口提到最前(HID 事件要求窗口为当前活动窗口, 真机验证)
+export async function raiseWindow(windowId: number): Promise<void> {
+  const wins = await listWindows();
+  const win = wins.find(w => w.windowId === windowId);
+  if (!win) throw new Error(`窗口 ${windowId} 不存在或已关闭`);
+  const ownerEsc = win.owner.replace(/"/g, '\\"');
+  // 无标题窗口退化为按位置匹配; 有标题按名称 AXRaise
+  const script = win.title
+    ? `tell application "System Events"
+  set frontmost of process "${ownerEsc}" to true
+  tell process "${ownerEsc}"
+    repeat with w in windows
+      if name of w is "${win.title.replace(/"/g, '\\"')}" then
+        perform action "AXRaise" of w
+        exit repeat
+      end if
+    end repeat
+  end tell`
+    : `tell application "System Events" to set frontmost of process "${ownerEsc}" to true`;
+  await run('osascript', ['-e', script], { timeout: 8000 }).catch(() => {});
+  await new Promise(r => setTimeout(r, 250));
+}
+
 // 窗口截图像素坐标 -> 全局显示点坐标
 export function pixelToGlobal(
   win: WinInfo,
@@ -123,6 +146,7 @@ export async function winDrag(p: {
   imageHeight: number;
 }): Promise<string> {
   const bin = await ensureWinInputBinary();
+  await raiseWindow(p.windowId);
   const win = await windowBounds(p.windowId);
   const size = { width: p.imageWidth, height: p.imageHeight };
   const s = pixelToGlobal(win, p.startX, p.startY, size);
@@ -143,6 +167,7 @@ export async function winClick(p: {
   imageHeight: number;
 }): Promise<string> {
   const bin = await ensureWinInputBinary();
+  await raiseWindow(p.windowId);
   const win = await windowBounds(p.windowId);
   const g = pixelToGlobal(win, p.x, p.y, { width: p.imageWidth, height: p.imageHeight });
   const { stdout } = await run(
