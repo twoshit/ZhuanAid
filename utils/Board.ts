@@ -14,6 +14,7 @@ const ALL_DIRECTIONS = [DIRECTION.UP, DIRECTION.DOWN, DIRECTION.LEFT, DIRECTION.
  * 1. 消除条件: 两块同色砖在上下左右方向上互相"可见"(中间无其他砖阻挡, 可隔空格)。
  *    - 规则1: 静止状态下即可见的同色对, 可直接点击消除(相当于移动 0 格)
  *    - 规则2: 砖滑动后, 在新位置与可见的同色砖成对消除; 每次移动只消一对
+ *      且要求从【原始位置】沿拖动方向到配对砖的直线路径不被阻挡(对齐 game_crack.py is_blocked)
  * 2. 移动(推箱子): 将一块砖朝某方向滑动 k 格, 该砖该方向上相连的所有砖一起滑动 k 格,
  *    且相连段外侧朝该方向必须有至少 k 格连续空格。行/列中间的空格同样可以利用。
  * 3. 不产生消除的滑动为无效移动(弹回)。
@@ -192,18 +193,11 @@ export class Board {
     const pointOf = (idx: number): Coordinate =>
       horizontal ? { r: start.r, c: idx } : { r: idx, c: start.c };
 
-    // 沿轴线两个方向: 用滑动后的线副本扫描
-    for (const step of [1, -1]) {
-      let k = newIdx + step;
-      while (k >= 0 && k < line.length && line[k] === 0) k += step;
-      if (k >= 0 && k < line.length && line[k] === v) return { value: v, point1: newPoint, point2: pointOf(k) };
-    }
-    // 垂直方向: 原棋盘即可(移动只影响本线, 新位置所在垂线上除起点外无变化)
-    const perpDirs = horizontal ? [DIRECTION.UP, DIRECTION.DOWN] : [DIRECTION.LEFT, DIRECTION.RIGHT];
-    for (const d of perpDirs) {
-      const q = this.firstVisible(newPoint, d);
-      if (q && this.grid[q.r][q.c] === v) return { value: v, point1: newPoint, point2: q };
-    }
+    // 仅沿【运动方向】扫描(真机验证: 反方向与垂直方向的同色对不触发消除)
+    const step = horizontal ? direction.dc : direction.dr;
+    let k = newIdx + step;
+    while (k >= 0 && k < line.length && line[k] === 0) k += step;
+    if (k >= 0 && k < line.length && line[k] === v) return { value: v, point1: newPoint, point2: pointOf(k) };
     return null;
   }
 
