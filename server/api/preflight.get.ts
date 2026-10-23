@@ -1,9 +1,12 @@
 // 环境自检: 屏幕抓取可用性 / 屏幕录制权限(图像是否纯色) / clang 鼠标助手编译
+import { ensureWinInputBinary } from '../utils/winInput';
+
 export default defineEventHandler(async () => {
   const result = {
     screencapture: false,
     screenRecording: false,
     dragBinary: false,
+    winInputBinary: false,
     messages: [] as string[],
   };
 
@@ -29,6 +32,13 @@ export default defineEventHandler(async () => {
     result.dragBinary = true;
   } catch (e: any) {
     result.messages.push(`鼠标拖拽助手编译失败: ${e?.message ?? e}`);
+  }
+
+  try {
+    await ensureWinInputBinary();
+    result.winInputBinary = true;
+  } catch (e: any) {
+    result.messages.push(`窗口输入助手编译失败: ${e?.message ?? e}`);
   }
 
   return result;

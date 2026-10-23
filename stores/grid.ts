@@ -27,6 +27,8 @@ interface GridState {
   boardRegion: BoardRegion | null;
   // 屏幕抓取模式下的截图像素尺寸; 手动上传时为 null
   captureImageSize: { width: number; height: number } | null;
+  // 窗口同步模式: 选定的小程序窗口 ID (后台抓取+后台注入, 不占用鼠标)
+  windowTarget: number | null;
 }
 
 export const useGridStore = defineStore('grid', {
@@ -56,6 +58,7 @@ export const useGridStore = defineStore('grid', {
     step: 1,
     boardRegion: null,
     captureImageSize: null,
+    windowTarget: null,
   }),
   getters: {
     // 棋盘行数
@@ -154,6 +157,32 @@ export const useGridStore = defineStore('grid', {
         this.loading = false;
         this.phase = '';
         toast.error('屏幕抓取失败', error?.statusMessage ?? error?.message ?? String(error));
+      }
+    },
+
+    // 抓取选定窗口并识别棋盘 (后台抓取, 窗口无需前台, 不占用鼠标)
+    async captureWindowAndLoad() {
+      const toast = toastFactory();
+      if (!this.windowTarget) {
+        toast.error('未选择窗口', '请先在自动操作卡片中选择小程序窗口');
+        return;
+      }
+      this.loading = true;
+      this.phase = '正在抓取窗口…';
+      try {
+        const res = await $fetch<{ base64: string; width: number; height: number }>('/api/win/capture', {
+          method: 'POST',
+          body: { windowId: this.windowTarget },
+        });
+        const bin = atob(res.base64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const file = new File([bytes], 'window-capture.png', { type: 'image/png' });
+        await this.load(file, { width: res.width, height: res.height });
+      } catch (error: any) {
+        this.loading = false;
+        this.phase = '';
+        toast.error('窗口抓取失败', error?.statusMessage ?? error?.message ?? String(error));
       }
     },
 
