@@ -1,5 +1,5 @@
 import type { EffectiveMove, EliminateBlock } from '~/types/board';
-import { Board } from '~/utils/Board';
+import { Board, DIRECTION } from '~/utils/Board';
 
 // 求解动作: 一次消除或一次移动, 携带在"搜索时棋盘状态"下有效的坐标信息
 export type SolveAction =
@@ -32,6 +32,41 @@ function countTiles(grid: number[][]): number {
   return n;
 }
 
+// 扩展的有效移动枚举: 除"移动段自身参与消除"外, 还包含"腾位移动"——
+// 滑走某些格子后, 原地不动的两个相同格子因中间清空而相邻消除。
+// (Board.findAllEffectiveMoves 只认前者, 会在 3-5-3-5 这类残局中误判死局)
+function findAllMovesExtended(board: Board): EffectiveMove[] {
+  const moves: EffectiveMove[] = [];
+  const seen = new Set<string>();
+
+  for (const hole of board.findHoleTiles()) {
+    for (const direction of [DIRECTION.UP, DIRECTION.DOWN, DIRECTION.LEFT, DIRECTION.RIGHT]) {
+      const tileVector = board.findTileVector(hole, direction);
+      if (!tileVector) continue;
+      const maxDistance = board.distance(tileVector.start, hole);
+      const moveDir = board.reverseDir(direction);
+
+      for (let step = 1; step <= maxDistance; step++) {
+        const move = {
+          direction: moveDir,
+          distance: step,
+          tileVector,
+          eliminate: null as unknown as EffectiveMove['eliminate'],
+        };
+        const [nextGrid] = board.execMove(move);
+        const elims = new Board(nextGrid).findAllEliminateBlock();
+        if (elims.length === 0) continue;
+        const key = `${tileVector.start.r},${tileVector.start.c},${tileVector.end.r},${tileVector.end.c},${moveDir.name},${step}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        move.eliminate = elims[0];
+        moves.push(move);
+      }
+    }
+  }
+  return moves;
+}
+
 // 单次随机推演: 有可消对时随机消一对, 没有时随机选一个"有效移动"(保证移动后必产生可消对)
 function playout(grid: number[][], rand: () => number, stepLimit = 5000): PlayoutResult {
   let current = grid.map(row => [...row]);
@@ -53,7 +88,7 @@ function playout(grid: number[][], rand: () => number, stepLimit = 5000): Playou
       continue;
     }
 
-    const moves = board.findAllEffectiveMoves();
+    const moves = findAllMovesExtended(board);
     if (moves.length === 0) break;
     const move = moves[Math.floor(rand() * moves.length)];
     const [next] = board.execMove(move);
