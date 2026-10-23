@@ -32,9 +32,9 @@ function countTiles(grid: number[][]): number {
   return n;
 }
 
-// 单次随机推演(真实规则模型):
-// - 存在紧贴同色对: 大概率直接点消一对; 少数情况先尝试移动, 以探索"移动与点消的先后顺序"
-// - 无紧贴对: 只能选一个能产生自动对消的刚性平移(整行/整列平移 k 格)
+// 单次随机推演(game_crack.py 规则模型):
+// - 存在可见同色对(隔空格对望/紧贴): 大概率直接点消一对; 少数情况先尝试移动, 以探索先后顺序
+// - 无可见对: 只能选一个"推箱子"段滑动(被拖砖滑 k 格后在新位置可见同色砖)
 // - 两者都没有: 死局
 function playout(grid: number[][], rand: () => number, stepLimit = 5000): PlayoutResult {
   let current = grid.map(row => [...row]);
