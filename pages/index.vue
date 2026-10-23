@@ -10,7 +10,7 @@
 
     <UButton v-if="gridStore.autoRunning" class="fixed right-5 top-16" @click="gridStore.stop()">
       <UIcon name="i-lucide:loader" class="animate-spin" />
-      <span>自动运行中，点击停止</span>
+      <span>{{ gridStore.phase || '自动运行中，点击停止' }}</span>
     </UButton>
     <!-- 自动执行-->
     <UButton

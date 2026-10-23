@@ -9,6 +9,7 @@ import { Board } from '~/utils/Board';
 import { BoardParser } from '~/utils/BoardParser';
 import { detectBoardRegion } from '~/utils/boardDetect';
 import { cropImage, gridIsValid, highlight } from '~/utils/helper';
+import { searchSolution } from '~/utils/solver';
 
 // 生成 14x10 的空棋盘
 // Array.from({ length: 14 }).map((_, i) => Array.from({ length: 10 }).fill(0));
@@ -266,6 +267,44 @@ export const useGridStore = defineStore('grid', {
 
       // 备份棋盘状态
       this.backupGrid = this.grid.map(row => [...row]);
+
+      // 先算后演: 在棋盘副本上随机重启搜索出完整全消除路径(无动画、速度快),
+      // 再按路径逐步演示。演示仍走 execMove/execEliminate, 高亮与回放记录逻辑完全不变。
+      if (!this.isStop && !this.isSuccess) {
+        this.phase = '正在计算最优解';
+        const actions = await searchSolution(this.grid, {
+          shouldStop: () => this.isStop,
+          onProgress: (attempt, bestRemain) => {
+            this.phase = `正在计算最优解(已尝试 ${attempt} 次, 最优剩余 ${bestRemain} 格)`;
+          },
+        });
+        this.phase = '';
+
+        if (actions) {
+          for (const action of actions) {
+            if (this.isStop) {
+              break;
+            }
+            if (action.type === 'eliminate') {
+              await this.execEliminate(action.block);
+            } else {
+              await this.execMove(action.move);
+            }
+          }
+
+          if (this.isSuccess) {
+            console.log('成功');
+            toast.success('执行结束', '已成功消除所有格子');
+          } else if (!this.isStop) {
+            console.warn('计算路径演示结束但棋盘未清空, 回退状态保持不变');
+          }
+
+          this.autoRunning = false;
+          this.isStop = false;
+          return;
+        }
+        // actions 为 null: 未找到完整解(或被停止), 走下方原有贪心流程兜底
+      }
 
       const path: Trip[] = [];
       let index = 0;
