@@ -1,5 +1,5 @@
 import type { EffectiveMove, EliminateBlock } from '~/types/board';
-import { Board, DIRECTION } from '~/utils/Board';
+import { Board } from '~/utils/Board';
 
 // 求解动作: 一次消除或一次移动, 携带在"搜索时棋盘状态"下有效的坐标信息
 export type SolveAction =
@@ -32,42 +32,10 @@ function countTiles(grid: number[][]): number {
   return n;
 }
 
-// 扩展的有效移动枚举: 除"移动段自身参与消除"外, 还包含"腾位移动"——
-// 滑走某些格子后, 原地不动的两个相同格子因中间清空而相邻消除。
-// (Board.findAllEffectiveMoves 只认前者, 会在 3-5-3-5 这类残局中误判死局)
-function findAllMovesExtended(board: Board): EffectiveMove[] {
-  const moves: EffectiveMove[] = [];
-  const seen = new Set<string>();
-
-  for (const hole of board.findHoleTiles()) {
-    for (const direction of [DIRECTION.UP, DIRECTION.DOWN, DIRECTION.LEFT, DIRECTION.RIGHT]) {
-      const tileVector = board.findTileVector(hole, direction);
-      if (!tileVector) continue;
-      const maxDistance = board.distance(tileVector.start, hole);
-      const moveDir = board.reverseDir(direction);
-
-      for (let step = 1; step <= maxDistance; step++) {
-        const move = {
-          direction: moveDir,
-          distance: step,
-          tileVector,
-          eliminate: null as unknown as EffectiveMove['eliminate'],
-        };
-        const [nextGrid] = board.execMove(move);
-        const elims = new Board(nextGrid).findAllEliminateBlock();
-        if (elims.length === 0) continue;
-        const key = `${tileVector.start.r},${tileVector.start.c},${tileVector.end.r},${tileVector.end.c},${moveDir.name},${step}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        move.eliminate = elims[0];
-        moves.push(move);
-      }
-    }
-  }
-  return moves;
-}
-
-// 单次随机推演: 有可消对时随机消一对, 没有时随机选一个"有效移动"(保证移动后必产生可消对)
+// 单次随机推演(真实规则模型):
+// - 存在紧贴同色对: 大概率直接点消一对; 少数情况先尝试移动, 以探索"移动与点消的先后顺序"
+// - 无紧贴对: 只能选一个能产生自动对消的刚性平移(整行/整列平移 k 格)
+// - 两者都没有: 死局
 function playout(grid: number[][], rand: () => number, stepLimit = 5000): PlayoutResult {
   let current = grid.map(row => [...row]);
   const actions: SolveAction[] = [];
@@ -79,7 +47,8 @@ function playout(grid: number[][], rand: () => number, stepLimit = 5000): Playou
     }
 
     const elims = board.findAllEliminateBlock();
-    if (elims.length > 0) {
+    // 优先点消; 只有当点消概率落空或无紧贴对时才枚举移动(枚举移动开销较大, 按需计算)
+    if (elims.length > 0 && (rand() < 0.75 || board.findAllEffectiveMoves().length === 0)) {
       const block = elims[Math.floor(rand() * elims.length)];
       const next = board.execEliminate(block);
       if (!next) break;
@@ -88,7 +57,7 @@ function playout(grid: number[][], rand: () => number, stepLimit = 5000): Playou
       continue;
     }
 
-    const moves = findAllMovesExtended(board);
+    const moves = board.findAllEffectiveMoves();
     if (moves.length === 0) break;
     const move = moves[Math.floor(rand() * moves.length)];
     const [next] = board.execMove(move);
@@ -112,22 +81,36 @@ export interface SearchOptions {
   onProgress?: (attempt: number, bestRemain: number) => void;
 }
 
+export interface SearchResult {
+  // 最优动作序列(完整全解或当前搜索到的最优部分解)
+  actions: SolveAction[];
+  // 是否找到完整全解
+  complete: boolean;
+  // 该路径结束后的剩余格数
+  remain: number;
+}
+
 /**
- * 随机重启搜索: 在棋盘副本上快速推演(不产生任何 UI 副作用),
- * 找到一条完整的全消除路径则返回动作序列, 否则返回 null。
+ * 随机重启搜索: 在棋盘副本上快速推演(不产生任何 UI 副作用)。
+ * 找到完整全解立即返回; 否则返回搜索到的最优部分解(真实规则下部分棋盘确实无法全消)。
+ * 返回 null 仅当用户中途停止。
  */
-export async function searchSolution(grid: number[][], options: SearchOptions = {}): Promise<SolveAction[] | null> {
+export async function searchSolution(grid: number[][], options: SearchOptions = {}): Promise<SearchResult | null> {
   const { maxPlayouts = 3000, budgetMs = 25000, seed = Date.now() >>> 0, shouldStop, onProgress } = options;
   const t0 = Date.now();
   let bestRemain = Infinity;
+  let bestActions: SolveAction[] = [];
 
   for (let i = 0; i < maxPlayouts; i++) {
     if (shouldStop?.()) return null;
 
     const rand = mulberry32((seed + Math.imul(i + 1, 2654435761)) >>> 0);
     const result = playout(grid, rand);
-    if (result.complete) return result.actions;
-    if (result.remain < bestRemain) bestRemain = result.remain;
+    if (result.complete) return { actions: result.actions, complete: true, remain: 0 };
+    if (result.remain < bestRemain) {
+      bestRemain = result.remain;
+      bestActions = result.actions;
+    }
 
     // 每 10 次让出主线程, 保持界面可交互/可显示进度
     if ((i + 1) % 10 === 0) {
@@ -137,5 +120,5 @@ export async function searchSolution(grid: number[][], options: SearchOptions = 
     }
   }
 
-  return null;
+  return { actions: bestActions, complete: false, remain: bestRemain };
 }

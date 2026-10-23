@@ -18,7 +18,6 @@ interface GridState {
   loading: boolean;
   phase: string;
   grid: number[][];
-  backupGrid: number[][];
   path: number[];
   eliminating: boolean;
   autoRunning: boolean;
@@ -30,32 +29,11 @@ interface GridState {
   captureImageSize: { width: number; height: number } | null;
 }
 
-interface Trip {
-  count: number;
-  choose: number;
-}
-
 export const useGridStore = defineStore('grid', {
   state: (): GridState => ({
     loading: false,
     phase: '',
     grid: [
-      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    ],
-    backupGrid: [
       [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
       [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
       [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -179,12 +157,20 @@ export const useGridStore = defineStore('grid', {
       }
     },
 
-    // 执行【移动】操作
+    // 执行【移动】操作: 整行/整列刚性平移, 真实游戏中表现为一次拖拽
     async execMove(move: EffectiveMove): Promise<void> {
       const settingStore = useSettingStore();
 
       return new Promise(async resolve => {
-        await highlight({ point1: move.tileVector.start, point2: move.tileVector.end }, settingStore.autoPlayDuration);
+        // 拖拽向量: 从线段起点拖到平移后的位置 (AutoControl 依赖此做鼠标拖拽映射)
+        const dragArea = {
+          point1: move.tileVector.start,
+          point2: {
+            r: move.tileVector.start.r + move.direction.dr * move.distance,
+            c: move.tileVector.start.c + move.direction.dc * move.distance,
+          },
+        };
+        await highlight(dragArea, settingStore.autoPlayDuration);
 
         const prevGrid = this.grid.map(row => [...row]);
         const board = new Board(this.grid);
@@ -198,7 +184,7 @@ export const useGridStore = defineStore('grid', {
             {
               type: 'move',
               grid: grid.map(row => [...row]),
-              area: { point1: move.tileVector.start, point2: move.tileVector.end },
+              area: dragArea,
               value: move.eliminate.value,
             },
             prevGrid
@@ -265,14 +251,11 @@ export const useGridStore = defineStore('grid', {
       const toast = toastFactory();
       this.autoRunning = true;
 
-      // 备份棋盘状态
-      this.backupGrid = this.grid.map(row => [...row]);
-
-      // 先算后演: 在棋盘副本上随机重启搜索出完整全消除路径(无动画、速度快),
-      // 再按路径逐步演示。演示仍走 execMove/execEliminate, 高亮与回放记录逻辑完全不变。
+      // 先算后演: 在棋盘副本上按真实规则随机重启搜索(无动画、速度快),
+      // 找到完整全解则演示全解; 否则演示最优部分解并如实报告剩余格数(真实规则下部分棋盘确实无法全消)。
       if (!this.isStop && !this.isSuccess) {
         this.phase = '正在计算最优解';
-        const actions = await searchSolution(this.grid, {
+        const result = await searchSolution(this.grid, {
           shouldStop: () => this.isStop,
           onProgress: (attempt, bestRemain) => {
             this.phase = `正在计算最优解(已尝试 ${attempt} 次, 最优剩余 ${bestRemain} 格)`;
@@ -280,8 +263,8 @@ export const useGridStore = defineStore('grid', {
         });
         this.phase = '';
 
-        if (actions) {
-          for (const action of actions) {
+        if (result) {
+          for (const action of result.actions) {
             if (this.isStop) {
               break;
             }
@@ -291,61 +274,14 @@ export const useGridStore = defineStore('grid', {
               await this.execMove(action.move);
             }
           }
-
-          if (this.isSuccess) {
-            console.log('成功');
-            toast.success('执行结束', '已成功消除所有格子');
-          } else if (!this.isStop) {
-            console.warn('计算路径演示结束但棋盘未清空, 回退状态保持不变');
-          }
-
-          this.autoRunning = false;
-          this.isStop = false;
-          return;
-        }
-        // actions 为 null: 未找到完整解(或被停止), 走下方原有贪心流程兜底
-      }
-
-      const path: Trip[] = [];
-      let index = 0;
-      while (true) {
-        if (this.isStop) {
-          break;
         }
 
-        if (this.moves.length === 0 && this.eliminates.length === 0) {
-          if (this.isSuccess) {
-            console.log('成功');
-            toast.success('执行结束', '已成功消除所有格子');
-          }
-          break;
-        }
-
-        // 执行【全部消除】
-        await this.execEliminateAll();
-
-        if (this.moves.length > 0) {
-          // 执行第一个【移动】
-          path.push({ count: this.moves.length, choose: 0 });
-          const move = this.moves[0];
-          await this.execMove(move);
-
-          index += 1;
-        }
-      }
-
-      if (!this.isStop && !this.isSuccess) {
-        console.log('执行结束: 出现死局, 继续尝试其他可能');
-        let max = 10;
-
-        for (const current of generateCombinations(path.map(i => i.count - 1))) {
-          await this.tryAgain(current);
-          if (this.isSuccess) {
-            break;
-          }
-          if (max-- === 0) {
-            break;
-          }
+        if (this.isSuccess) {
+          console.log('成功');
+          toast.success('执行结束', '已成功消除所有格子');
+        } else if (!this.isStop && result) {
+          console.warn(`演示最优路径结束, 剩余 ${result.remain} 格(当前规则下已无合法操作)`);
+          toast.error('无法全消', `当前规则下最多只能消到剩 ${result.remain} 格, 已演示最优路径`);
         }
       }
 
@@ -353,64 +289,8 @@ export const useGridStore = defineStore('grid', {
       this.isStop = false;
     },
 
-    async tryAgain(executePath: number[]): Promise<boolean> {
-      const toast = toastFactory();
-
-      // 恢复棋盘状态
-      this.grid = this.backupGrid.map(row => [...row]);
-      // 棋盘已重置, 之前记录的步骤作废, 重新记录本次尝试的路径
-      useReplayStore().reset();
-
-      let index = 0;
-      while (true) {
-        if (this.isStop) {
-          break;
-        }
-
-        if (this.moves.length === 0 && this.eliminates.length === 0) {
-          if (this.isSuccess) {
-            console.log('成功');
-            toast.success('执行结束', '已成功消除所有格子');
-            console.log(`执行路径: ${executePath}`);
-          }
-          break;
-        }
-
-        // 执行【全部消除】
-        await this.execEliminateAll();
-
-        if (this.moves.length > 0) {
-          // 执行第一个【移动】
-          let choose = 0;
-          if (typeof executePath[index] === 'number' && executePath[index] < this.moves.length) {
-            choose = executePath[index];
-          }
-          const move = this.moves[choose];
-          await this.execMove(move);
-
-          index += 1;
-        }
-      }
-
-      return this.isSuccess;
-    },
-
     stop() {
       this.isStop = true;
     },
   },
 });
-
-function* generateCombinations(limits: number[]) {
-  function* recurse(pos: number, current: number[]): Generator<number[]> {
-    if (pos === limits.length) {
-      yield [...current];
-      return;
-    }
-    for (let i = 0; i <= limits[pos]; i++) {
-      current[pos] = i;
-      yield* recurse(pos + 1, current);
-    }
-  }
-  yield* recurse(0, []);
-}
