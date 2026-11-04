@@ -73,7 +73,7 @@
               </UButton>
             </div>
 
-            <div class="border-t pt-3">
+            <div v-if="isLocal" class="border-t pt-3">
               <div class="flex gap-4 items-center">
                 <UButton @click="handleCapture" :loading="capturing" color="emerald" variant="outline">
                   抓取屏幕并识别
@@ -112,6 +112,8 @@ import { useSettingStore } from '~/stores/setting';
 
 const settingStore = useSettingStore();
 const gridStore = useGridStore();
+// 整屏抓取只能抓本机(Mac)屏幕, 局域网其他设备隐藏该入口
+const isLocal = isLocalClient();
 
 const options = [
   {

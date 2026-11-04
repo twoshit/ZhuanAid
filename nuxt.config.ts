@@ -6,4 +6,9 @@ export default defineNuxtConfig({
   },
   modules: ['@vueuse/nuxt', '@nuxt/ui', '@pinia/nuxt'],
   ssr: false,
+  // 监听所有网卡: 局域网内其他电脑可打开 http://<本机IP>:3000 使用识别+求解
+  devServer: {
+    host: '0.0.0.0',
+    port: 3000,
+  },
 });

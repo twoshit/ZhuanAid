@@ -7,18 +7,20 @@ function isRing(r: number, g: number, b: number): boolean {
 }
 
 // 在连续段列表中取覆盖率高(>=2)的第一段与最后一段(即木框环的上/下、左/右边带)
-function findBands(profile: number[], threshold: number): [number, number][] {
+// minLen: 最小带长(px)。木框环带较厚(降采样后仍>=2px);
+// 天空/马路交界等噪声常形成 1px 细带, 不过滤会被误当成框边导致网格错位
+function findBands(profile: number[], threshold: number, minLen = 1): [number, number][] {
   const bands: [number, number][] = [];
   let start: number | null = null;
   for (let i = 0; i < profile.length; i++) {
     if (profile[i] > threshold) {
       if (start === null) start = i;
     } else if (start !== null) {
-      bands.push([start, i - 1]);
+      if (i - start >= minLen) bands.push([start, i - 1]);
       start = null;
     }
   }
-  if (start !== null) bands.push([start, profile.length - 1]);
+  if (start !== null && profile.length - start >= minLen) bands.push([start, profile.length - 1]);
   return bands;
 }
 
@@ -137,8 +139,11 @@ export async function detectBoardRegion(
       }
     }
 
-    const rowBands = findBands(rowHits.map(v => v / bw), 0.5);
-    const colBands = findBands(colHits.map(v => v / bh), 0.5);
+    // 木框带厚度约为分析窗口短边的 0.4%~2%, 细于此的判为噪声带
+    const minRowBand = Math.max(2, Math.round(bh * 0.004));
+    const minColBand = Math.max(2, Math.round(bw * 0.004));
+    const rowBands = findBands(rowHits.map(v => v / bw), 0.5, minRowBand);
+    const colBands = findBands(colHits.map(v => v / bh), 0.5, minColBand);
     if (rowBands.length < 2 || colBands.length < 2) return null;
 
     const sx = W / sw;

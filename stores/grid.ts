@@ -29,6 +29,9 @@ interface GridState {
   captureImageSize: { width: number; height: number } | null;
   // 窗口同步模式: 选定的小程序窗口 ID (后台抓取+后台注入, 不占用鼠标)
   windowTarget: number | null;
+  // 最近一次棋盘加载来源: 整屏抓取 / 窗口抓取 / 手动上传(null)
+  // 自动操作的坐标通道必须与来源一致, 否则点击位置会错
+  captureSource: 'screen' | 'window' | null;
 }
 
 export const useGridStore = defineStore('grid', {
@@ -59,6 +62,7 @@ export const useGridStore = defineStore('grid', {
     boardRegion: null,
     captureImageSize: null,
     windowTarget: null,
+    captureSource: null,
   }),
   getters: {
     // 棋盘行数
@@ -88,8 +92,13 @@ export const useGridStore = defineStore('grid', {
     },
   },
   actions: {
-    // 加载棋盘; screenInfo 提供时表示来自屏幕抓取(截图像素尺寸), 用于自动操作的坐标映射
-    async load(file: File, screenInfo?: { width: number; height: number }) {
+    // 加载棋盘; screenInfo 提供时表示来自屏幕/窗口抓取(截图像素尺寸), 用于自动操作的坐标映射
+    // source: 'screen'=整屏抓取(坐标为全屏像素) 'window'=窗口抓取(坐标为窗口像素)
+    async load(
+      file: File,
+      screenInfo?: { width: number; height: number },
+      source: 'screen' | 'window' = 'screen'
+    ) {
       const toast = toastFactory();
       const settingStore = useSettingStore();
 
@@ -108,6 +117,7 @@ export const useGridStore = defineStore('grid', {
 
       this.boardRegion = targetRegion;
       this.captureImageSize = screenInfo ?? null;
+      this.captureSource = screenInfo ? source : null;
 
       this.phase = '';
       // 加载新棋盘时清空回放记录
@@ -125,7 +135,14 @@ export const useGridStore = defineStore('grid', {
         // 裁剪图片
         const boardAreaFile = await cropImage(file, targetRegion);
         const grid = await parser.parse(boardAreaFile, settingStore.rows, settingStore.cols);
-        console.log('提取的棋盘数据为:', grid);
+        this.phase = ''; // 解析结束, 清除进度文案 (避免停留在"正在学习…")
+        console.log('提取的棋盘数据为:', JSON.stringify(grid));
+        if (parser.lastLearned.length > 0) {
+          toast.success(
+            `已自动学习 ${parser.lastLearned.length} 个新图标`,
+            `编号 #${parser.lastLearned.join(' #')} 已加入素材库, 后续截图可直接识别`
+          );
+        }
         if (gridIsValid(grid)) {
           toast.success('棋盘加载成功', '现在可以开始验证了');
           this.grid = grid;
@@ -178,7 +195,7 @@ export const useGridStore = defineStore('grid', {
         const bytes = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
         const file = new File([bytes], 'window-capture.png', { type: 'image/png' });
-        await this.load(file, { width: res.width, height: res.height });
+        await this.load(file, { width: res.width, height: res.height }, 'window');
       } catch (error: any) {
         this.loading = false;
         this.phase = '';

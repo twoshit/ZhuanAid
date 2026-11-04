@@ -96,7 +96,7 @@ export interface SearchResult {
  * 返回 null 仅当用户中途停止。
  */
 export async function searchSolution(grid: number[][], options: SearchOptions = {}): Promise<SearchResult | null> {
-  const { maxPlayouts = 3000, budgetMs = 25000, seed = Date.now() >>> 0, shouldStop, onProgress } = options;
+  const { maxPlayouts = 15000, budgetMs = 120000, seed = Date.now() >>> 0, shouldStop, onProgress } = options;
   const t0 = Date.now();
   let bestRemain = Infinity;
   let bestActions: SolveAction[] = [];

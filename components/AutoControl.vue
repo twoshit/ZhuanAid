@@ -27,6 +27,12 @@
             全自动执行
           </UButton>
           <UButton v-else icon="i-lucide:square" color="red" @click="autoStore.stop()">停止</UButton>
+          <span
+            v-if="autoStore.running"
+            class="text-xs text-gray-400"
+          >
+            全局停止快捷键: ⌘⌥A (任何应用下均可中断)
+          </span>
         </div>
       </div>
     </template>
@@ -69,13 +75,19 @@
           v-model="autoStore.inputMode"
           :options="[
             { value: 'window', label: '窗口同步 (自动前置+画面校验)' },
-            { value: 'hid', label: '真实鼠标 (整屏抓取, 窗口需前台)' },
+            { value: 'hid', label: '真实鼠标 (整屏抓取, 每步自动前置游戏窗口)' },
           ]"
           :ui="{ fieldset: 'flex gap-6 flex-1' }"
           size="sm"
           :disabled="autoStore.running"
         />
         <UCheckbox v-model="autoStore.syncVerify" label="每步校验画面同步" size="sm" :disabled="autoStore.running" />
+        <UCheckbox
+          v-model="autoStore.autoRecover"
+          label="画面不符时自动重求解并继续 (最多3次)"
+          size="sm"
+          :disabled="autoStore.running || !autoStore.syncVerify"
+        />
         <URadioGroup
           v-model="autoStore.mode"
           :options="[
@@ -198,13 +210,16 @@ function onWindowSelect(label: string) {
   if (win) autoStore.inputMode = 'window';
 }
 
-// 始终展示: 窗口选择入口在卡片内, 不能等选中后才显示
-const showCard = computed(() => true);
+// 自动操作依赖本机窗口/鼠标/热键, 仅本机显示; 局域网其他设备只用识别+求解
+const showCard = computed(() => isLocalClient());
 
-// 棋盘/求解结果变化(步骤被重置)时, 重置任务队列
+// 棋盘/求解结果变化(步骤被重置)时, 重置任务队列; 自动恢复重建队列时跳过
 watch(
   () => replayStore.steps.length,
-  () => autoStore.reset()
+  () => {
+    if (autoStore.recovering) return;
+    autoStore.reset();
+  }
 );
 
 const intervalOptions = ['慢 (1.5s)', '普通 (0.8s)', '快 (0.4s)'];

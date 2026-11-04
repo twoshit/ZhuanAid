@@ -192,11 +192,17 @@ export class Board {
     const pointOf = (idx: number): Coordinate =>
       horizontal ? { r: start.r, c: idx } : { r: idx, c: start.c };
 
-    // 沿轴线两个方向: 用滑动后的线副本扫描
+    // 滑动后砖段占据的新区间 [lo+s, hi+s]。段内除被拖砖外的砖都是"跟随段一起移动"的:
+    // 它们与被拖砖的相对位置在滑动前后不变(本就相邻/相阻), 真实游戏中不会因此成对消除。
+    // 沿轴线只允许与"静止砖"(未随段移动)配对; 首个遇到的砖若是跟随砖则视为阻挡。
+    const segLo = lo + s;
+    const segHi = hi + s;
     for (const step of [1, -1]) {
       let k = newIdx + step;
       while (k >= 0 && k < line.length && line[k] === 0) k += step;
-      if (k >= 0 && k < line.length && line[k] === v) return { value: v, point1: newPoint, point2: pointOf(k) };
+      if (k < 0 || k >= line.length) continue;
+      if (k >= segLo && k <= segHi) continue; // 跟随段内的砖: 不构成新消除(即使同色)
+      if (line[k] === v) return { value: v, point1: newPoint, point2: pointOf(k) };
     }
     // 垂直方向: 原棋盘即可(移动只影响本线, 新位置所在垂线上除起点外无变化)
     const perpDirs = horizontal ? [DIRECTION.UP, DIRECTION.DOWN] : [DIRECTION.LEFT, DIRECTION.RIGHT];

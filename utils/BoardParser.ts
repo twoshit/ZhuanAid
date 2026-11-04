@@ -6,13 +6,52 @@ const MODEL_URL = 'https://www.kaggle.com/models/google/mobilenet-v2/TfJs/035-12
 const INPUT_NAME = 'images'; // 模型输入键
 const INPUT_SHAPE: [number, number] = [128, 128]; // 128x128
 const ICON_PATH = '/icons/'; // 图标路径
-const SIM = 0.6; // 相似度阈值
+const SIM = 0.7; // 相似度阈值 (0.6 时新形状易被相似旧类吸收, 实测真实截图在 0.7 下仍全量匹配)
+const LEARN_MIN_SIM = 0.82; // 未知格聚为同一新图标的相似度门槛
 
-let prototypes: any[] = []; // 每个分类的原型向量
+let prototypes: any[] = []; // 每个分类的原型向量 (下标即类别 ID, 含学习图标)
 let sharedModel: any = null; // 共享模型实例
+let loadedLearned: number[] = []; // 已载入原型库的学习图标 ID
+
+// 提取一张图片的特征向量
+async function imageFeatures(img: HTMLImageElement): Promise<number[]> {
+  const tensor = tf.browser
+    .fromPixels(img)
+    .resizeNearestNeighbor(INPUT_SHAPE)
+    .toFloat()
+    .div(255.0) // 归一化 [0,1]
+    .expandDims();
+  const output = sharedModel.execute({ [INPUT_NAME]: tensor });
+  const features = Array.from(await output.data());
+  tensor.dispose();
+  output.dispose();
+  return features as number[];
+}
+
+// 向服务端查询已学习图标, 增量载入其原型向量
+async function syncLearnedPrototypes(notify?: (s: string) => void) {
+  try {
+    const { ids } = await $fetch<{ ids: number[] }>('/api/icons/learned');
+    for (const id of ids) {
+      if (loadedLearned.includes(id)) continue;
+      try {
+        const img = await loadImage(`${ICON_PATH}${id}.png`);
+        prototypes[id] = await imageFeatures(img);
+        loadedLearned.push(id);
+      } catch (e: any) {
+        console.warn(`学习图标 ${id}.png 加载失败: ${e.message}`);
+      }
+    }
+    if (notify && loadedLearned.length) notify(`原型库: ${ids.length} 个学习图标`);
+  } catch {
+    /* 服务端不可用时仅用内置图标 */
+  }
+}
 
 export class BoardParser {
   private callback?: (status: string) => void;
+  // 本次 parse 中新学习到的图标 ID
+  lastLearned: number[] = [];
 
   constructor(callback?: (status: string) => void) {
     this.callback = callback;
@@ -36,22 +75,14 @@ export class BoardParser {
       for (let i = 0; i < NUM_CLASSES; i++) {
         try {
           const img = await loadImage(`${ICON_PATH}${i}.png`);
-          const tensor = tf.browser
-            .fromPixels(img)
-            .resizeNearestNeighbor(INPUT_SHAPE)
-            .toFloat()
-            .div(255.0) // 归一化 [0,1]
-            .expandDims();
-          const output = sharedModel.execute({ [INPUT_NAME]: tensor });
-          const features = await output.data();
-          prototypes.push(Array.from(features));
-          tensor.dispose();
-          output.dispose();
+          prototypes[i] = await imageFeatures(img);
         } catch (e: any) {
           console.warn(`图标 ${i}.png 未找到，跳过: ${e.message}`);
-          prototypes.push(null);
+          prototypes[i] = null;
         }
       }
+      // 载入历史学习的新图标
+      await syncLearnedPrototypes();
     } catch (e: any) {
       console.warn(`模型加载失败: ${e.message}\n请检查网络或URL。`);
       throw e;
@@ -59,10 +90,13 @@ export class BoardParser {
   }
 
   public async parse(file: File, rows: number, cols: number) {
-    // 加载原型（只需一次）
+    // 加载原型（只需一次）; 已有原型库时增量同步其他端学习的新图标
     if (prototypes.length === 0) {
       await this.loadPrototypes();
+    } else {
+      await syncLearnedPrototypes();
     }
+    this.lastLearned = [];
 
     this.notify('提取网格中');
     const img = await loadImage(URL.createObjectURL(file));
@@ -90,6 +124,8 @@ export class BoardParser {
 
     // 提取网格
     const grid: number[][] = [];
+    // 所有原型均不匹配的格子: 特征+裁剪图, 网格扫完后聚类学习为新图标
+    const unknowns: { r: number; c: number; best: number; features: number[]; png: string }[] = [];
     for (let row = 0; row < rows; row++) {
       grid[row] = [];
       for (let col = 0; col < cols; col++) {
@@ -100,7 +136,7 @@ export class BoardParser {
         const cropY = Math.max(0, y + (cellHeight - cellSize) / 2);
 
         // 对格子区域提取特征并分类; inset 为中心内缩比例
-        const classify = async (inset: number): Promise<number> => {
+        const classify = async (inset: number, wantPng = false) => {
           const shrink = cellSize * inset;
           const sx = cropX + shrink / 2;
           const sy = cropY + shrink / 2;
@@ -118,35 +154,110 @@ export class BoardParser {
             .div(255.0)
             .expandDims();
           const output = sharedModel.execute({ [INPUT_NAME]: tensor });
-          const cellFeatures: number[] = Array.from(await output.data());
+          const features: number[] = Array.from(await output.data());
           tensor.dispose();
           output.dispose();
 
           let bestClass = -1;
           let bestSim = -1;
-          for (let idx = 0; idx < NUM_CLASSES; idx++) {
-            if (prototypes[idx] === null) continue;
-            const sim = cosineSimilarity(cellFeatures, prototypes[idx]);
+          for (let idx = 0; idx < prototypes.length; idx++) {
+            if (!prototypes[idx]) continue;
+            const sim = cosineSimilarity(features, prototypes[idx]);
             if (sim > bestSim) {
               bestSim = sim;
               bestClass = idx;
             }
           }
-          return bestSim > SIM ? bestClass : -1;
+          const cls = bestSim > SIM ? bestClass : -1;
+          // 最终仍失败时保留裁剪图, 供学习新图标
+          const png = wantPng && cls === -1 ? cellCanvas.toDataURL('image/png') : '';
+          return { cls, best: bestClass, features, png };
         };
 
-        let bestClass = await classify(0);
+        let res = await classify(0);
         // 区域对齐偏差会让邻砖边缘混入格子导致匹配失败: 逐级内缩重试
         for (const inset of [0.06, 0.12, 0.2]) {
-          if (bestClass !== -1) break;
-          bestClass = await classify(inset);
+          if (res.cls !== -1) break;
+          res = await classify(inset, true);
         }
-        if (bestClass === -1) {
-          console.warn(`(${row + 1}, ${col + 1}) 所有内缩级别均匹配失败`);
+        if (res.cls === -1) {
+          unknowns.push({ r: row, c: col, best: res.best, features: res.features, png: res.png });
+          grid[row][col] = -1; // 学习成功后会被替换为新编号
+        } else {
+          grid[row][col] = res.cls;
         }
-
-        grid[row][col] = bestClass;
       }
+    }
+
+    // 未知格聚类 -> 登记为新图标 (同形状互相似度 >= LEARN_MIN_SIM 归为一类)
+    if (unknowns.length > 0) {
+      this.notify(`发现 ${unknowns.length} 个未知图标, 正在学习…`);
+      interface Cluster {
+        features: number[];
+        png: string;
+        cells: [number, number][];
+      }
+      const clusters: Cluster[] = [];
+      for (const u of unknowns) {
+        if (!u.png) continue; // 无裁剪图的失败格(理论极少)只能放弃
+        let hit: Cluster | null = null;
+        for (const cl of clusters) {
+          if (cosineSimilarity(u.features, cl.features) >= LEARN_MIN_SIM) {
+            hit = cl;
+            break;
+          }
+        }
+        if (hit) {
+          hit.cells.push([u.r, u.c]);
+          if (!hit.png) hit.png = u.png;
+        } else {
+          clusters.push({ features: u.features, png: u.png, cells: [[u.r, u.c]] });
+        }
+      }
+      for (const cl of clusters) {
+        // 防污染: 真实游戏中每种图标至少出现 2 块; 仅 1 格的未知簇多为已知图标的偶发低分, 不登记
+        if (cl.cells.length < 2) {
+          console.warn(`[LEARN] 跳过孤立未知格 R${cl.cells[0][0] + 1}C${cl.cells[0][1] + 1} (疑似已知图标低分, 不登记)`);
+          continue;
+        }
+        try {
+          const { id } = await $fetch<{ id: number }>('/api/icons/learned', {
+            method: 'POST',
+            body: { base64: cl.png },
+          });
+          prototypes[id] = cl.features; // 特征即该图标原型, 本次与后续解析均可复用
+          if (!loadedLearned.includes(id)) loadedLearned.push(id);
+          for (const [r, c] of cl.cells) grid[r][c] = id;
+          this.lastLearned.push(id);
+          console.log(`[LEARN] 新图标 #${id}: ${cl.cells.length} 格`);
+        } catch (e: any) {
+          console.warn('学习图标保存失败:', e?.message ?? e);
+        }
+      }
+      if (this.lastLearned.length > 0) {
+        this.notify(`已自动学习 ${this.lastLearned.length} 个新图标 (#${this.lastLearned.join(' #')})`);
+      }
+
+      // 奇偶救援: 游戏中每种图标出现次数必为偶数(2或4)。学习阶段结束后,
+      // 若某孤立失败格的最近似类 X 在盘内已匹配数为奇数, 几乎可断定本格就是 X(低分漏配), 直接补上;
+      // 若 X 为偶数则本格可能是与 X 相似的其他图标/新图标落单, 维持失败不误补。
+      const counts = new Map<number, number>();
+      for (const rowArr of grid) for (const v of rowArr) if (v >= 0) counts.set(v, (counts.get(v) ?? 0) + 1);
+      let rescued = 0;
+      for (const u of unknowns) {
+        if (grid[u.r][u.c] !== -1) continue; // 已被学习补上
+        if (u.best < 0) continue;
+        if (((counts.get(u.best) ?? 0) & 1) === 1) {
+          grid[u.r][u.c] = u.best;
+          counts.set(u.best, (counts.get(u.best) ?? 0) + 1);
+          rescued++;
+          console.log(`[PARITY] R${u.r + 1}C${u.c + 1} 按奇偶规则补为已知类 #${u.best}`);
+        }
+      }
+      // 收尾: 明确剩余失败状态, 避免界面停留在"正在学习…"
+      const left = grid.reduce((n, rowArr) => n + rowArr.filter(v => v < 0).length, 0);
+      if (left > 0) this.notify(`识别完成: ${left} 格无法匹配 (已尝试学习/奇偶救援)`);
+      else if (rescued > 0) this.notify(`识别完成: ${rescued} 格按奇偶规则自动补全`);
     }
 
     return grid;
