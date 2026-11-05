@@ -1,13 +1,4 @@
-import type {
-  Coordinate,
-  Direction,
-  DirectionName,
-  EffectiveMove,
-  EliminateBlock,
-  EliminatePointPosition,
-  MaximumMove,
-  TileVector,
-} from '~/types/board';
+import type { Coordinate, Direction, DirectionName, EffectiveMove, EliminateBlock, TileVector } from '~/types/board';
 
 export const DIRECTION: Record<DirectionName, Direction> = {
   UP: { dr: -1, dc: 0, name: 'UP' },
@@ -16,6 +7,17 @@ export const DIRECTION: Record<DirectionName, Direction> = {
   RIGHT: { dr: 0, dc: 1, name: 'RIGHT' },
 };
 
+const ALL_DIRECTIONS = [DIRECTION.UP, DIRECTION.DOWN, DIRECTION.LEFT, DIRECTION.RIGHT];
+
+/**
+ * 游戏规则模型 (对齐 game_crack.py 中的规则注释):
+ * 1. 消除条件: 两块同色砖在上下左右方向上互相"可见"(中间无其他砖阻挡, 可隔空格)。
+ *    - 规则1: 静止状态下即可见的同色对, 可直接点击消除(相当于移动 0 格)
+ *    - 规则2: 砖滑动后, 在新位置与可见的同色砖成对消除; 每次移动只消一对
+ * 2. 移动(推箱子): 将一块砖朝某方向滑动 k 格, 该砖该方向上相连的所有砖一起滑动 k 格,
+ *    且相连段外侧朝该方向必须有至少 k 格连续空格。行/列中间的空格同样可以利用。
+ * 3. 不产生消除的滑动为无效移动(弹回)。
+ */
 export class Board {
   grid: number[][];
   rows: number;
@@ -27,456 +29,271 @@ export class Board {
     this.cols = grid[0].length;
   }
 
-  // 复制棋盘状态
-  clone() {
+  clone(): Board {
     return new Board(this.grid);
   }
 
-  // 棋盘是否全部消除
   isSuccess(): boolean {
     for (const row of this.grid) {
       for (const cell of row) {
-        if (cell !== 0) {
-          return false;
-        }
+        if (cell !== 0) return false;
       }
     }
     return true;
   }
 
-  // 格式化坐标
   formatCoordinate(coordinate: Coordinate): string {
     return `(R${coordinate.r + 1},C${coordinate.c + 1})`;
   }
 
-  // 格式化格子的信息
-  formatTileInfo(point: Coordinate, includeValue = true): string {
-    let msg = `坐标:(R${point.r + 1},C${point.c + 1})`;
-    if (includeValue) {
-      msg += `,值:${this.getTileValue(point)}`;
-    }
-    return msg;
-  }
-
-  // 获取格子的值
-  getTileValue(point: Coordinate): number {
-    if (!this.inBoard(point)) {
-      throw new Error(`格子${this.formatTileInfo(point, false)}不在棋盘内`);
-    }
-    return this.grid[point.r][point.c];
-  }
-
-  // 设置格子的值
-  setTileValue(point: Coordinate, value: number) {
-    if (!this.inBoard(point)) {
-      throw new Error(`格子${this.formatTileInfo(point, false)}不在棋盘内`);
-    }
-    this.grid[point.r][point.c] = value;
-  }
-
-  // 查询指定坐标是否在棋盘内
-  inBoard(point: Coordinate) {
+  inBoard(point: Coordinate): boolean {
     return point.r >= 0 && point.r < this.rows && point.c >= 0 && point.c < this.cols;
   }
 
-  // 格子是否为空
-  isHoleTile(point: Coordinate) {
-    if (!this.inBoard(point)) {
-      throw new Error(`${this.formatTileInfo(point, false)}不在棋盘内`);
-    }
+  getTileValue(point: Coordinate): number {
+    return this.grid[point.r][point.c];
+  }
+
+  setTileValue(point: Coordinate, value: number) {
+    this.grid[point.r][point.c] = value;
+  }
+
+  isHoleTile(point: Coordinate): boolean {
     return this.grid[point.r][point.c] === 0;
   }
 
-  // 计算两个格子的距离（必须位于同一行/同一列）
-  distance(p1: Coordinate, p2: Coordinate) {
-    if (p1.r !== p2.r && p1.c !== p2.c) {
-      throw new Error(
-        `p1${this.formatTileInfo(p1, false)} 和 p2${this.formatTileInfo(p2)} 不在同一行/同一列，无法计算距离。`
-      );
-    }
-
-    const v1 = Math.abs(p2.r - p1.r);
-    const v2 = Math.abs(p2.c - p1.c);
-    return Math.max(v1, v2);
-  }
-
-  // 取反方向
-  reverseDir(direction: Direction) {
-    switch (direction.name) {
-      case 'UP':
-        return DIRECTION.DOWN;
-      case 'DOWN':
-        return DIRECTION.UP;
-      case 'LEFT':
-        return DIRECTION.RIGHT;
-      case 'RIGHT':
-        return DIRECTION.LEFT;
-      default:
-        throw new Error(`无效的方向: <${direction.name}>`);
-    }
-  }
-
-  // 格子的值是否相等
-  isEqual(p1: Coordinate, p2: Coordinate): boolean {
-    if (!this.inBoard(p1) || !this.inBoard(p2)) {
-      throw new Error(`p1${this.formatTileInfo(p1, false)} 或 p2${this.formatTileInfo(p2, false)} 不在棋盘内`);
-    }
-
-    return this.grid[p1.r][p1.c] === this.grid[p2.r][p2.c];
-  }
-
   tick(point: Coordinate, direction: Direction, distance: number): Coordinate | null {
-    if (!this.inBoard(point)) {
-      return null;
-    }
-
-    const p = { ...point };
-    p.r += direction.dr * distance;
-    p.c += direction.dc * distance;
-
-    if (!this.inBoard(p)) {
-      return null;
-    }
-
-    return p;
+    const p = { r: point.r + direction.dr * distance, c: point.c + direction.dc * distance };
+    return this.inBoard(p) ? p : null;
   }
 
-  // 查找格子在指定方向上的邻居，返回邻居的坐标，skipHole=false表示不跳过 Hole 节点(空隙节点)
-  findNeighborTile(point: Coordinate, direction: Direction, skipHole = false): Coordinate | null {
-    if (!this.inBoard(point)) {
-      return null;
-    }
-
-    const p = { ...point };
-    p.r += direction.dr;
-    p.c += direction.dc;
-    if (!this.inBoard(p)) {
-      return null;
-    }
-
-    if (!skipHole) {
-      return p;
-    }
-
-    if (!this.isHoleTile(p)) {
-      return p;
-    }
-
-    return this.findNeighborTile(p, direction, skipHole);
+  // 从 point 沿 direction 跨过空格, 找到第一块非空砖(无则 null)
+  private firstVisible(point: Coordinate, direction: Direction): Coordinate | null {
+    let q = this.tick(point, direction, 1);
+    while (q && this.isHoleTile(q)) q = this.tick(q, direction, 1);
+    return q;
   }
 
-  // 查找 hole 节点在指定方向上最近的最大可移动格子组
-  findTileVector(hole: Coordinate, direction: Direction): TileVector | null {
-    if (!this.inBoard(hole)) {
-      throw new Error(`${this.formatTileInfo(hole, false)}不在棋盘内`);
+  // 两块是否互相"可见": 同色非空, 且在同一行/列上跨空格直达(中间无其他砖)
+  private isVisiblePair(p1: Coordinate, p2: Coordinate): boolean {
+    const v = this.grid[p1.r][p1.c];
+    if (v === 0 || this.grid[p2.r][p2.c] !== v) return false;
+    if (p1.r === p2.r) {
+      const dir = p2.c > p1.c ? DIRECTION.RIGHT : DIRECTION.LEFT;
+      const q = this.firstVisible(p1, dir);
+      return !!q && q.r === p2.r && q.c === p2.c;
     }
-    if (!this.isHoleTile(hole)) {
-      throw new Error(`参数错误: ${this.formatTileInfo(hole)}为非 hole 节点`);
+    if (p1.c === p2.c) {
+      const dir = p2.r > p1.r ? DIRECTION.DOWN : DIRECTION.UP;
+      const q = this.firstVisible(p1, dir);
+      return !!q && q.r === p2.r && q.c === p2.c;
     }
-
-    const point = { ...hole };
-
-    // 跳过开始的空格
-    do {
-      point.r += direction.dr;
-      point.c += direction.dc;
-    } while (this.inBoard(point) && this.isHoleTile(point));
-
-    if (!this.inBoard(point)) {
-      return null;
-    }
-
-    const start = { ...point };
-    let end = { ...point };
-    while (true) {
-      const nextTile = this.findNeighborTile(end, direction);
-      if (nextTile && !this.isHoleTile(nextTile)) {
-        end = nextTile;
-      } else {
-        break;
-      }
-    }
-
-    return { start, end, direction };
+    return false;
   }
 
-  // 查询 TileVector 上的所有坐标点(点的顺序与向量保持一致)
-  getTileVectorPoints(tileVector: TileVector): Coordinate[] {
-    const points: Coordinate[] = [];
-
-    if (tileVector.direction.name === 'UP') {
-      for (let r = tileVector.start.r; r >= tileVector.end.r; r--) {
-        points.push({ r: r, c: tileVector.start.c });
-      }
-    } else if (tileVector.direction.name === 'DOWN') {
-      for (let r = tileVector.start.r; r <= tileVector.end.r; r++) {
-        points.push({ r: r, c: tileVector.start.c });
-      }
-    } else if (tileVector.direction.name === 'LEFT') {
-      for (let c = tileVector.start.c; c >= tileVector.end.c; c--) {
-        points.push({ r: tileVector.start.r, c: c });
-      }
-    } else if (tileVector.direction.name === 'RIGHT') {
-      for (let c = tileVector.start.c; c <= tileVector.end.c; c++) {
-        points.push({ r: tileVector.start.r, c: c });
-      }
-    }
-
-    return points;
-  }
-
-  // 查找给定空隙的所有的 MaximumMove
-  findMaximumMoveForHole(hole: Coordinate): MaximumMove[] {
-    if (!this.inBoard(hole)) {
-      throw new Error(`${this.formatTileInfo(hole, false)}不在棋盘内`);
-    }
-    if (!this.isHoleTile(hole)) {
-      throw new Error(`参数错误: ${this.formatTileInfo(hole)}为非 hole 节点`);
-    }
-
-    const moves: MaximumMove[] = [];
-    for (const direction of Object.values(DIRECTION)) {
-      const tileVector = this.findTileVector(hole, direction);
-      if (!tileVector) continue;
-
-      const distance = this.distance(tileVector.start, hole);
-      moves.push({
-        direction: this.reverseDir(direction),
-        distance: distance,
-        tileVector: tileVector,
-      });
-    }
-
-    return moves;
-  }
-
-  // 找出棋盘上的所有可消除块
-  findAllEliminateBlock() {
-    const board = this.grid;
-    const rows = this.rows;
-    const cols = this.cols;
-
+  /**
+   * 所有可直接点消的对(规则1): 上下左右跨空格可见的同色砖对, 每对只记录一次
+   */
+  findAllEliminateBlock(): EliminateBlock[] {
     const blocks: EliminateBlock[] = [];
-
-    // 只检查 DOWN 和 RIGHT 方向，避免重复
-    const checkDirs = [DIRECTION.DOWN, DIRECTION.RIGHT];
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const point: Coordinate = { r, c };
-
-        if (this.isHoleTile(point)) continue;
-
-        for (const direction of checkDirs) {
-          const neighborTile = this.findNeighborTile(point, direction, true);
-          if (neighborTile && this.isEqual(point, neighborTile)) {
-            blocks.push({
-              value: board[r][c],
-              point1: point,
-              point2: neighborTile,
-            });
+    const seen = new Set<string>();
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        const v = this.grid[r][c];
+        if (v === 0) continue;
+        for (const d of ALL_DIRECTIONS) {
+          const q = this.firstVisible({ r, c }, d);
+          if (q && this.grid[q.r][q.c] === v) {
+            const key =
+              r < q.r || (r === q.r && c <= q.c)
+                ? `${r},${c}|${q.r},${q.c}`
+                : `${q.r},${q.c}|${r},${c}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            blocks.push({ value: v, point1: { r, c }, point2: { r: q.r, c: q.c } });
           }
         }
       }
     }
-
     return blocks;
   }
 
-  // 找出棋盘中所有的空格坐标
-  findHoleTiles(): Coordinate[] {
-    const tiles: Coordinate[] = [];
-    for (let r = 0; r < this.rows; r++) {
-      for (let c = 0; c < this.cols; c++) {
-        const point: Coordinate = { r, c };
-        if (this.isHoleTile(point)) {
-          tiles.push({ ...point });
-        }
-      }
-    }
-    return tiles;
-  }
-
-  // 找出棋盘上的所有 MaximumMove
-  private findAllMaximumMoves(): MaximumMove[] {
-    const holes: Coordinate[] = this.findHoleTiles();
-    const moves: MaximumMove[] = [];
-    for (const hole of holes) {
-      // 找出这个空格在四个方向上的 TileVector
-      moves.push(...this.findMaximumMoveForHole(hole));
-    }
-    return moves;
-  }
-
-  // 将 TileVector 朝指定方向移动指定距离，返回新的棋盘状态和移动后的 vector
-  private slide(tileVector: TileVector, direction: Direction, distance: number): [number[][], TileVector] {
-    const board = this.clone();
-
-    // 将 TileVector 上的所有点进行移动
-    const points = this.getTileVectorPoints(tileVector);
-    for (const point of points) {
-      const value = board.getTileValue(point);
-      point.r += direction.dr * distance;
-      point.c += direction.dc * distance;
-      board.setTileValue(point, value);
-    }
-
-    // 移动后留空的位置改为0
-    // 注意：移动不会修改tileVector，因为 getTileVectorPoints 是拷贝复制
-    const p = { ...tileVector.end };
-    for (let i = 0; i < distance; i++) {
-      board.setTileValue(p, 0);
-      p.r += direction.dr;
-      p.c += direction.dc;
-    }
-
-    const movedVector: TileVector = {
-      start: points[0],
-      end: points[points.length - 1],
-      direction: tileVector.direction,
-    };
-
-    return [board.grid, movedVector];
-  }
-
-  // 点的坐标是否在 vector 上面
-  private isPointInVector(point: Coordinate, vector: TileVector): boolean {
-    if (vector.direction.name === 'UP') {
-      return point.c === vector.start.c && point.r <= vector.start.r && point.r >= vector.end.r;
-    } else if (vector.direction.name === 'DOWN') {
-      return point.c === vector.start.c && point.r >= vector.start.r && point.r <= vector.end.r;
-    } else if (vector.direction.name === 'LEFT') {
-      return point.r === vector.start.r && point.c <= vector.start.c && point.c >= vector.end.c;
-    } else if (vector.direction.name === 'RIGHT') {
-      return point.r === vector.start.r && point.c >= vector.start.c && point.c <= vector.end.c;
-    } else {
-      throw new Error('');
-    }
-  }
-
-  // 找出给定的消除发生在 vector 上面的哪个位置(坐标和偏移)
-  private findEliminatePointInVector(eliminate: EliminateBlock, vector: TileVector): EliminatePointPosition | null {
+  /**
+   * 执行点消: 两点必须同色且互相可见
+   */
+  execEliminate(eliminate: EliminateBlock): number[][] | null {
     const { point1, point2 } = eliminate;
-    if (this.isPointInVector(point1, vector)) {
-      // p1 在向量上
-      return {
-        ...point1,
-        offset: this.distance(point1, vector.start),
-      };
-    } else if (this.isPointInVector(point2, vector)) {
-      // p2 在向量上
-      return {
-        ...point2,
-        offset: this.distance(point2, vector.start),
-      };
+    if (!this.inBoard(point1) || !this.inBoard(point2)) {
+      console.warn('点消无效: 坐标越界');
+      return null;
     }
-
-    return null;
-  }
-
-  // 找出 MaximumMove 中存在的有效 Move (移动后能够消除的Move)
-  private evaluate(maximumMove: MaximumMove): EffectiveMove[] {
-    const { tileVector: maximumMoveTileVector, direction, distance } = maximumMove;
-
-    const effectiveMoves: EffectiveMove[] = [];
-
-    for (let step = 1; step <= distance; step++) {
-      const [board, movedTileVector] = this.slide(maximumMoveTileVector, direction, step);
-      const eliminates = new Board(board).findAllEliminateBlock();
-      for (const eliminate of eliminates) {
-        const position = this.findEliminatePointInVector(eliminate, movedTileVector);
-        if (position) {
-          // 需要计算精确范围
-          const p = this.tick(maximumMoveTileVector.start, maximumMoveTileVector.direction, position.offset);
-          if (p) {
-            const vector: TileVector = {
-              direction: movedTileVector.direction,
-              start: maximumMoveTileVector.start,
-              end: p,
-            };
-            effectiveMoves.push({
-              direction: direction,
-              distance: step,
-              tileVector: vector,
-              eliminate,
-            });
-          }
-        }
-      }
-    }
-
-    return effectiveMoves;
-  }
-
-  // 对 EffectiveMove 对象进行去重
-  private deduplication(moves: EffectiveMove[]): EffectiveMove[] {
-    const map = new Map<string, EffectiveMove>();
-    for (const move of moves) {
-      const key = `${this.formatCoordinate(move.tileVector.start)}:${this.formatCoordinate(move.tileVector.end)}:${move.direction.name}:${move.distance}`;
-      map.set(key, move);
-    }
-    return Array.from(map.values());
-  }
-
-  // 找出棋盘上的所有 EffectiveMove
-  findAllEffectiveMoves(): EffectiveMove[] {
-    const maximumMoves = this.findAllMaximumMoves();
-
-    let moves: EffectiveMove[] = [];
-    for (const maximumMove of maximumMoves) {
-      const effectiveMoves = this.evaluate(maximumMove);
-      moves.push(...effectiveMoves);
-    }
-    return this.deduplication(moves);
-  }
-
-  // 消除
-  private eliminate(point1: Coordinate, point2: Coordinate) {
-    if (!this.isEqual(point1, point2)) {
+    if (!this.isVisiblePair(point1, point2)) {
       console.warn(
-        `执行消除时发现格子内容并不相等, 分别是[${this.formatTileInfo(point1)}] 和 [${this.formatTileInfo(point2)}]`
+        `点消无效: ${this.formatCoordinate(point1)} 与 ${this.formatCoordinate(point2)} 不是可见同色对`
       );
       return null;
     }
-
-    if (point1.r === point2.r) {
-      // 在同一行
-      const start = Math.min(point1.c, point2.c);
-      const end = Math.max(point1.c, point2.c);
-      for (let c = start + 1; c < end; c++) {
-        if (!this.isHoleTile({ r: point1.r, c: c })) {
-          return null;
-        }
-      }
-    } else if (point1.c === point2.c) {
-      // 在同一列
-      const start = Math.min(point1.r, point2.r);
-      const end = Math.max(point1.r, point2.r);
-      for (let r = start + 1; r < end; r++) {
-        if (!this.isHoleTile({ r: r, c: point1.c })) {
-          return null;
-        }
-      }
-    } else {
-      console.warn(
-        `执行消除时发现格子不再一条直线上, 分别是[${this.formatTileInfo(point1, false)}] 和 [${this.formatTileInfo(point2)}]`
-      );
-      return null;
-    }
-
     const board = this.clone();
     board.setTileValue(point1, 0);
     board.setTileValue(point2, 0);
     return board.grid;
   }
 
-  // 执行【移动】操作
-  execMove(move: EffectiveMove) {
-    const { tileVector: effectiveMoveTileVector, direction, distance } = move;
-    return this.slide(effectiveMoveTileVector, direction, distance);
+  // 从 start 沿 direction 的连续砖段末端(含 start 自身)
+  private segmentEnd(start: Coordinate, direction: Direction): Coordinate {
+    let cur = start;
+    let next = this.tick(cur, direction, 1);
+    while (next && !this.isHoleTile(next)) {
+      cur = next;
+      next = this.tick(cur, direction, 1);
+    }
+    return cur;
   }
 
-  // 执行【消除】操作
-  execEliminate(eliminate: EliminateBlock) {
-    return this.eliminate(eliminate.point1, eliminate.point2);
+  // 连续砖段末端朝 direction 方向的连续空格数
+  private roomAfter(end: Coordinate, direction: Direction): number {
+    let room = 0;
+    let q = this.tick(end, direction, 1);
+    while (q && this.isHoleTile(q)) {
+      room++;
+      q = this.tick(q, direction, 1);
+    }
+    return room;
+  }
+
+  // 模拟: 把 start..end 的砖段沿 direction 滑 i 格后, 被拖砖在新位置可见的同色对; 无则 null
+  private slidePair(start: Coordinate, direction: Direction, i: number): EliminateBlock | null {
+    const end = this.segmentEnd(start, direction);
+    const horizontal = direction.dc !== 0;
+    const s = horizontal ? direction.dc * i : direction.dr * i;
+    const bIdx = horizontal ? start.c : start.r;
+    const eIdx = horizontal ? end.c : end.r;
+
+    // 滑动后的"所在线"副本(只有该砖段移动)
+    const line: number[] = horizontal
+      ? [...this.grid[start.r]]
+      : this.grid.map(row => row[start.c]);
+    const lo = Math.min(bIdx, eIdx);
+    const hi = Math.max(bIdx, eIdx);
+    const v = line[bIdx];
+    const values: number[] = [];
+    for (let k = lo; k <= hi; k++) {
+      values.push(line[k]);
+      line[k] = 0;
+    }
+    for (let k = lo; k <= hi; k++) line[k + s] = values[k - lo];
+
+    // 被拖砖的新位置
+    const newPoint: Coordinate = horizontal
+      ? { r: start.r, c: start.c + s }
+      : { r: start.r + s, c: start.c };
+    const newIdx = bIdx + s;
+
+    const pointOf = (idx: number): Coordinate =>
+      horizontal ? { r: start.r, c: idx } : { r: idx, c: start.c };
+
+    // 滑动后砖段占据的新区间 [lo+s, hi+s]。段内除被拖砖外的砖都是"跟随段一起移动"的:
+    // 它们与被拖砖的相对位置在滑动前后不变(本就相邻/相阻), 真实游戏中不会因此成对消除。
+    // 沿轴线只允许与"静止砖"(未随段移动)配对; 首个遇到的砖若是跟随砖则视为阻挡。
+    const segLo = lo + s;
+    const segHi = hi + s;
+    for (const step of [1, -1]) {
+      let k = newIdx + step;
+      while (k >= 0 && k < line.length && line[k] === 0) k += step;
+      if (k < 0 || k >= line.length) continue;
+      if (k >= segLo && k <= segHi) continue; // 跟随段内的砖: 不构成新消除(即使同色)
+      if (line[k] === v) return { value: v, point1: newPoint, point2: pointOf(k) };
+    }
+    // 垂直方向: 原棋盘即可(移动只影响本线, 新位置所在垂线上除起点外无变化)
+    const perpDirs = horizontal ? [DIRECTION.UP, DIRECTION.DOWN] : [DIRECTION.LEFT, DIRECTION.RIGHT];
+    for (const d of perpDirs) {
+      const q = this.firstVisible(newPoint, d);
+      if (q && this.grid[q.r][q.c] === v) return { value: v, point1: newPoint, point2: q };
+    }
+    return null;
+  }
+
+  /**
+   * 所有有效移动(规则2): 推箱子段滑动 k 格且被拖砖在新位置可见同色砖
+   * tileVector: start=被拖砖, end=该方向相连段末端; direction/distance=滑动
+   */
+  findAllEffectiveMoves(): EffectiveMove[] {
+    const moves: EffectiveMove[] = [];
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        if (this.grid[r][c] === 0) continue;
+        const start = { r, c };
+        for (const d of ALL_DIRECTIONS) {
+          const end = this.segmentEnd(start, d);
+          const room = this.roomAfter(end, d);
+          for (let i = 1; i <= room; i++) {
+            const pair = this.slidePair(start, d, i);
+            if (!pair) continue;
+            // 规则: 同色可见对(紧贴或隔空格)只需点击直接消除, 其他砖不会移动。
+            // 若被拖砖与目标砖本就互相可见, 该移动纯属多余(等价于一次点消), 必须剔除,
+            // 否则会出现"滑动整行/整列来消除相邻对"的错误操作。
+            if (this.isVisiblePair(start, pair.point2)) continue;
+            moves.push({
+              direction: d,
+              distance: i,
+              tileVector: { start, end, direction: d },
+              eliminate: pair,
+            });
+          }
+        }
+      }
+    }
+    return moves;
+  }
+
+  /**
+   * 执行【移动】: 段滑动 + 消除被拖砖与新位置可见对, 返回最终棋盘与滑动后的线段位置
+   */
+  execMove(move: EffectiveMove): [number[][], TileVector] {
+    const { tileVector, direction, distance } = move;
+    const start = tileVector.start;
+    const end = this.segmentEnd(start, direction);
+    const room = this.roomAfter(end, direction);
+    const pair = distance <= room ? this.slidePair(start, direction, distance) : null;
+    if (!pair) {
+      console.warn('执行了无效移动(不会产生消除), 弹回');
+      return [this.grid.map(row => [...row]), tileVector];
+    }
+    const horizontal = direction.dc !== 0;
+    const s = horizontal ? direction.dc * distance : direction.dr * distance;
+    const grid = this.grid.map(row => [...row]);
+    // 滑动砖段
+    if (horizontal) {
+      const lo = Math.min(start.c, end.c);
+      const hi = Math.max(start.c, end.c);
+      const values: number[] = [];
+      for (let c = lo; c <= hi; c++) {
+        values.push(grid[start.r][c]);
+        grid[start.r][c] = 0;
+      }
+      for (let c = lo; c <= hi; c++) grid[start.r][c + s] = values[c - lo];
+    } else {
+      const lo = Math.min(start.r, end.r);
+      const hi = Math.max(start.r, end.r);
+      const values: number[] = [];
+      for (let r = lo; r <= hi; r++) {
+        values.push(grid[r][start.c]);
+        grid[r][start.c] = 0;
+      }
+      for (let r = lo; r <= hi; r++) grid[r + s][start.c] = values[r - lo];
+    }
+    // 消除被拖砖新位置与可见对
+    const newPoint: Coordinate = horizontal
+      ? { r: start.r, c: start.c + s }
+      : { r: start.r + s, c: start.c };
+    grid[newPoint.r][newPoint.c] = 0;
+    grid[pair.point2.r][pair.point2.c] = 0;
+
+    const movedTileVector: TileVector = {
+      start: newPoint,
+      end: { r: end.r + direction.dr * distance, c: end.c + direction.dc * distance },
+      direction,
+    };
+    return [grid, movedTileVector];
   }
 }

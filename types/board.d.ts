@@ -41,3 +41,15 @@ export interface HighLightArea {
   point1: Coordinate;
   point2: Coordinate;
 }
+
+// 步骤回放的单步记录
+export interface ReplayStep {
+  // 步骤类型: 移动后消除 / 立即消除
+  type: 'move' | 'eliminate';
+  // 执行该步骤后的棋盘快照
+  grid: number[][];
+  // 该步骤对应的高亮区域
+  area: HighLightArea;
+  // 涉及的方块图标值
+  value: number;
+}
