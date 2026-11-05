@@ -229,6 +229,10 @@ export class Board {
           for (let i = 1; i <= room; i++) {
             const pair = this.slidePair(start, d, i);
             if (!pair) continue;
+            // 规则: 同色可见对(紧贴或隔空格)只需点击直接消除, 其他砖不会移动。
+            // 若被拖砖与目标砖本就互相可见, 该移动纯属多余(等价于一次点消), 必须剔除,
+            // 否则会出现"滑动整行/整列来消除相邻对"的错误操作。
+            if (this.isVisiblePair(start, pair.point2)) continue;
             moves.push({
               direction: d,
               distance: i,

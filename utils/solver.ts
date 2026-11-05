@@ -6,24 +6,6 @@ export type SolveAction =
   | { type: 'eliminate'; block: EliminateBlock }
   | { type: 'move'; move: EffectiveMove };
 
-interface PlayoutResult {
-  complete: boolean;
-  actions: SolveAction[];
-  remain: number;
-}
-
-// 轻量确定性随机数 (mulberry32), 同一种子可复现同一条路径
-function mulberry32(seed: number): () => number {
-  let s = seed >>> 0;
-  return () => {
-    s = (s + 0x6d2b79f5) >>> 0;
-    let t = s;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 function countTiles(grid: number[][]): number {
   let n = 0;
   for (const row of grid) {
@@ -32,52 +14,16 @@ function countTiles(grid: number[][]): number {
   return n;
 }
 
-// 单次随机推演(game_crack.py 规则模型):
-// - 存在可见同色对(隔空格对望/紧贴): 大概率直接点消一对; 少数情况先尝试移动, 以探索先后顺序
-// - 无可见对: 只能选一个"推箱子"段滑动(被拖砖滑 k 格后在新位置可见同色砖)
-// - 两者都没有: 死局
-function playout(grid: number[][], rand: () => number, stepLimit = 5000): PlayoutResult {
-  let current = grid.map(row => [...row]);
-  const actions: SolveAction[] = [];
-
-  for (let step = 0; step < stepLimit; step++) {
-    const board = new Board(current);
-    if (board.isSuccess()) {
-      return { complete: true, actions, remain: 0 };
-    }
-
-    const elims = board.findAllEliminateBlock();
-    // 优先点消; 只有当点消概率落空或无紧贴对时才枚举移动(枚举移动开销较大, 按需计算)
-    if (elims.length > 0 && (rand() < 0.75 || board.findAllEffectiveMoves().length === 0)) {
-      const block = elims[Math.floor(rand() * elims.length)];
-      const next = board.execEliminate(block);
-      if (!next) break;
-      current = next;
-      actions.push({ type: 'eliminate', block });
-      continue;
-    }
-
-    const moves = board.findAllEffectiveMoves();
-    if (moves.length === 0) break;
-    const move = moves[Math.floor(rand() * moves.length)];
-    const [next] = board.execMove(move);
-    current = next;
-    actions.push({ type: 'move', move });
-  }
-
-  return { complete: false, actions, remain: countTiles(current) };
-}
-
 export interface SearchOptions {
-  // 最大推演次数
+  // 搜索节点预算(与推演规模成正比, 控制最大搜索量)
   maxPlayouts?: number;
-  // 时间预算(毫秒), 超时返回 null
+  // 时间预算(毫秒), 超时返回当前最优部分解
   budgetMs?: number;
-  // 随机种子
+  // 预留参数(搜索为确定性算法, 同盘面始终得到同一最优解)
   seed?: number;
   // 用户取消检测
   shouldStop?: () => boolean;
-  // 进度回调 (第几次尝试, 目前最优剩余格数)
+  // 进度回调 (已搜索节点数, 目前最优剩余格数)
   onProgress?: (attempt: number, bestRemain: number) => void;
 }
 
@@ -91,34 +37,94 @@ export interface SearchResult {
 }
 
 /**
- * 随机重启搜索: 在棋盘副本上快速推演(不产生任何 UI 副作用)。
- * 找到完整全解立即返回; 否则返回搜索到的最优部分解(真实规则下部分棋盘确实无法全消)。
+ * 回溯搜索(DFS + 死局记忆化): 在棋盘副本上求解, 不产生任何 UI 副作用。
+ *
+ * 关键点(此前随机贪心推演无法全消的原因):
+ * - 同色的连续三砖(如 C1 列 R9/R10/R11)存在"中+上"与"中+下"两种消除分支,
+ *   随机贪心一旦选错就走进死局且无法回退, 导致整盘无法全消。
+ * - 这里对每个状态的所有可点消对/有效移动逐一尝试, 失败则回溯;
+ *   已确认无解的状态记入 dead 集合避免重复搜索。
+ *
+ * 找到完整全解立即返回; 否则返回搜索到的最优部分解(真实死局盘面确实无法全消)。
  * 返回 null 仅当用户中途停止。
  */
 export async function searchSolution(grid: number[][], options: SearchOptions = {}): Promise<SearchResult | null> {
-  const { maxPlayouts = 15000, budgetMs = 120000, seed = Date.now() >>> 0, shouldStop, onProgress } = options;
+  const { maxPlayouts = 15000, budgetMs = 120000, shouldStop, onProgress } = options;
   const t0 = Date.now();
-  let bestRemain = Infinity;
-  let bestActions: SolveAction[] = [];
+  // 节点上限: 实测常规盘面全解只需约 1000 节点, 留足余量防止死局盘无限搜索
+  const nodeLimit = Math.max(40000, maxPlayouts * 4);
 
-  for (let i = 0; i < maxPlayouts; i++) {
-    if (shouldStop?.()) return null;
+  const dead = new Set<string>(); // 已确认无法全解的状态
+  const path: SolveAction[] = [];
+  let nodes = 0;
+  let aborted = false;
+  let bestRemain = countTiles(grid);
+  let bestPath: SolveAction[] = [];
 
-    const rand = mulberry32((seed + Math.imul(i + 1, 2654435761)) >>> 0);
-    const result = playout(grid, rand);
-    if (result.complete) return { actions: result.actions, complete: true, remain: 0 };
-    if (result.remain < bestRemain) {
-      bestRemain = result.remain;
-      bestActions = result.actions;
+  const stateKey = (g: number[][]): string => g.map((row) => row.join(',')).join(';');
+
+  const dfs = (g: number[][]): boolean => {
+    if (aborted) return false;
+    if (++nodes > nodeLimit) {
+      aborted = true;
+      return false;
+    }
+    if ((nodes & 2047) === 0) {
+      onProgress?.(nodes, bestRemain);
+      if (shouldStop?.() || Date.now() - t0 > budgetMs) {
+        aborted = true;
+        return false;
+      }
     }
 
-    // 每 10 次让出主线程, 保持界面可交互/可显示进度
-    if ((i + 1) % 10 === 0) {
-      onProgress?.(i + 1, bestRemain);
-      await new Promise(resolve => setTimeout(resolve, 0));
-      if (Date.now() - t0 > budgetMs) break;
-    }
-  }
+    const board = new Board(g);
+    if (board.isSuccess()) return true;
 
-  return { actions: bestActions, complete: false, remain: bestRemain };
+    const remain = countTiles(g);
+    if (remain < bestRemain) {
+      bestRemain = remain;
+      bestPath = path.slice();
+    }
+
+    const key = stateKey(g);
+    if (dead.has(key)) return false;
+
+    // 规则: 同色可见对(紧贴或隔空格)直接点击消除, 其他砖不移动; 因此优先穷尽点消分支。
+    // 分支顺序按"消除后仍可点消对数更多"优先, 为后续保留更多选择余地(避免过早走进死角)。
+    const elims = board.findAllEliminateBlock();
+    const elimBranches = elims
+      .map((block) => {
+        const next = board.execEliminate(block);
+        return next ? { block, next, room: new Board(next).findAllEliminateBlock().length } : null;
+      })
+      .filter((x): x is { block: EliminateBlock; next: number[][]; room: number } => !!x)
+      .sort((a, b) => b.room - a.room);
+    for (const { block, next } of elimBranches) {
+      path.push({ type: 'eliminate', block });
+      if (dfs(next)) return true;
+      path.pop();
+      if (aborted) return false;
+    }
+
+    // 没有点消可行时, 尝试推箱子有效移动(冗余移动已在 Board 中剔除)
+    const moves = board.findAllEffectiveMoves();
+    for (const move of moves) {
+      const [next] = board.execMove(move);
+      path.push({ type: 'move', move });
+      if (dfs(next)) return true;
+      path.pop();
+      if (aborted) return false;
+    }
+
+    dead.add(key);
+    return false;
+  };
+
+  const complete = dfs(grid);
+  // 让出主线程, 保证界面已更新的进度/结果能被渲染
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  if (aborted && shouldStop?.()) return null;
+  if (complete) return { actions: path.slice(), complete: true, remain: 0 };
+  return { actions: bestPath, complete: false, remain: bestRemain };
 }

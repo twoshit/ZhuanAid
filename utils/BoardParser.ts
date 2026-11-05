@@ -1,6 +1,14 @@
 import * as tf from '@tensorflow/tfjs';
 import { NUM_CLASSES } from '~/config';
 import { cosineSimilarity, loadImage } from '~/utils/helper';
+import {
+  computeSignature,
+  histSimilarity,
+  phashSimilarity,
+  CLASSIC_MIN_SCORE,
+  CLASSIC_MIN_MARGIN,
+  type ClassicSig,
+} from '~/utils/imageSimilarity';
 
 const MODEL_URL = 'https://www.kaggle.com/models/google/mobilenet-v2/TfJs/035-128-feature-vector/3';
 const INPUT_NAME = 'images'; // 模型输入键
@@ -10,6 +18,7 @@ const SIM = 0.7; // 相似度阈值 (0.6 时新形状易被相似旧类吸收, �
 const LEARN_MIN_SIM = 0.82; // 未知格聚为同一新图标的相似度门槛
 
 let prototypes: any[] = []; // 每个分类的原型向量 (下标即类别 ID, 含学习图标)
+let classicSigs: (ClassicSig | null)[] = []; // 与 prototypes 对齐的经典特征签名 (pHash + 直方图)
 let sharedModel: any = null; // 共享模型实例
 let loadedLearned: number[] = []; // 已载入原型库的学习图标 ID
 
@@ -37,6 +46,7 @@ async function syncLearnedPrototypes(notify?: (s: string) => void) {
       try {
         const img = await loadImage(`${ICON_PATH}${id}.png`);
         prototypes[id] = await imageFeatures(img);
+        classicSigs[id] = computeSignature(img);
         loadedLearned.push(id);
       } catch (e: any) {
         console.warn(`学习图标 ${id}.png 加载失败: ${e.message}`);
@@ -72,13 +82,16 @@ export class BoardParser {
 
       this.notify('加载原型中');
       prototypes = [];
+      classicSigs = [];
       for (let i = 0; i < NUM_CLASSES; i++) {
         try {
           const img = await loadImage(`${ICON_PATH}${i}.png`);
           prototypes[i] = await imageFeatures(img);
+          classicSigs[i] = computeSignature(img);
         } catch (e: any) {
           console.warn(`图标 ${i}.png 未找到，跳过: ${e.message}`);
           prototypes[i] = null;
+          classicSigs[i] = null;
         }
       }
       // 载入历史学习的新图标
@@ -125,7 +138,14 @@ export class BoardParser {
     // 提取网格
     const grid: number[][] = [];
     // 所有原型均不匹配的格子: 特征+裁剪图, 网格扫完后聚类学习为新图标
-    const unknowns: { r: number; c: number; best: number; features: number[]; png: string }[] = [];
+    const unknowns: {
+      r: number;
+      c: number;
+      best: number;
+      features: number[];
+      png: string;
+      sig: ClassicSig;
+    }[] = [];
     for (let row = 0; row < rows; row++) {
       grid[row] = [];
       for (let col = 0; col < cols; col++) {
@@ -169,9 +189,11 @@ export class BoardParser {
             }
           }
           const cls = bestSim > SIM ? bestClass : -1;
-          // 最终仍失败时保留裁剪图, 供学习新图标
-          const png = wantPng && cls === -1 ? cellCanvas.toDataURL('image/png') : '';
-          return { cls, best: bestClass, features, png };
+          // 最终仍失败时保留裁剪图, 供学习新图标; 同时计算经典特征用于救援/聚类校验
+          const want = wantPng && cls === -1;
+          const png = want ? cellCanvas.toDataURL('image/png') : '';
+          const sig = want ? computeSignature(cellCanvas) : null;
+          return { cls, best: bestClass, features, png, sig };
         };
 
         let res = await classify(0);
@@ -181,8 +203,45 @@ export class BoardParser {
           res = await classify(inset, true);
         }
         if (res.cls === -1) {
-          unknowns.push({ r: row, c: col, best: res.best, features: res.features, png: res.png });
-          grid[row][col] = -1; // 学习成功后会被替换为新编号
+          // 经典特征救援: 神经网络全 inset 失败后, 用 pHash + 直方图与所有原型比对。
+          // 采用相对判据(最高分达标且明显领先次高), 避免把真正的新图标误吞为相近已知类。
+          let rescued = -1;
+          let rescuedScore = -1;
+          let rescuedMargin = -1;
+          if (res.sig) {
+            const scored: { idx: number; score: number }[] = [];
+            for (let idx = 0; idx < prototypes.length; idx++) {
+              const ps = classicSigs[idx];
+              if (!prototypes[idx] || !ps) continue;
+              const hist = histSimilarity(res.sig.hist, ps.hist);
+              const phash = phashSimilarity(res.sig.phash, ps.phash);
+              scored.push({ idx, score: hist + phash });
+            }
+            scored.sort((a, b) => b.score - a.score);
+            const best = scored[0];
+            const second = scored[1] ? scored[1].score : -Infinity;
+            if (best && best.score >= CLASSIC_MIN_SCORE && best.score - second >= CLASSIC_MIN_MARGIN) {
+              rescued = best.idx;
+              rescuedScore = best.score;
+              rescuedMargin = best.score - second;
+            }
+          }
+          if (rescued >= 0) {
+            grid[row][col] = rescued;
+            console.log(
+              `[CLASSIC] R${row + 1}C${col + 1} 经典特征救援为 #${rescued} (score=${rescuedScore.toFixed(3)}, margin=${rescuedMargin.toFixed(3)})`
+            );
+          } else {
+            unknowns.push({
+              r: row,
+              c: col,
+              best: res.best,
+              features: res.features,
+              png: res.png,
+              sig: res.sig!,
+            });
+            grid[row][col] = -1; // 学习成功后会被替换为新编号
+          }
         } else {
           grid[row][col] = res.cls;
         }
@@ -195,14 +254,18 @@ export class BoardParser {
       interface Cluster {
         features: number[];
         png: string;
+        sig: ClassicSig;
         cells: [number, number][];
       }
       const clusters: Cluster[] = [];
       for (const u of unknowns) {
-        if (!u.png) continue; // 无裁剪图的失败格(理论极少)只能放弃
+        if (!u.png || !u.sig) continue; // 无裁剪图的失败格(理论极少)只能放弃
         let hit: Cluster | null = null;
         for (const cl of clusters) {
-          if (cosineSimilarity(u.features, cl.features) >= LEARN_MIN_SIM) {
+          // 聚类同时要求神经网络特征余弦 >= LEARN_MIN_SIM 且 pHash 相似度 >= 0.8
+          // 防止把两个视觉上不同的新图标误并成一类
+          const phSim = phashSimilarity(u.sig.phash, cl.sig.phash);
+          if (cosineSimilarity(u.features, cl.features) >= LEARN_MIN_SIM && phSim >= 0.8) {
             hit = cl;
             break;
           }
@@ -211,7 +274,7 @@ export class BoardParser {
           hit.cells.push([u.r, u.c]);
           if (!hit.png) hit.png = u.png;
         } else {
-          clusters.push({ features: u.features, png: u.png, cells: [[u.r, u.c]] });
+          clusters.push({ features: u.features, png: u.png, sig: u.sig, cells: [[u.r, u.c]] });
         }
       }
       for (const cl of clusters) {
@@ -226,6 +289,7 @@ export class BoardParser {
             body: { base64: cl.png },
           });
           prototypes[id] = cl.features; // 特征即该图标原型, 本次与后续解析均可复用
+          classicSigs[id] = cl.sig; // 经典签名同步登记, 供后续救援/聚类使用
           if (!loadedLearned.includes(id)) loadedLearned.push(id);
           for (const [r, c] of cl.cells) grid[r][c] = id;
           this.lastLearned.push(id);
